@@ -133,6 +133,26 @@ func TestDetachRunsTmuxDetachClient(t *testing.T) {
 	}
 }
 
+func TestKillRunsTmuxKillSession(t *testing.T) {
+	exec := &fakeExecutor{}
+	service := NewService(exec)
+
+	err := service.Kill(context.Background(), "XL-123")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	want := []recordedCommand{
+		{
+			name: "tmux",
+			args: []string{"kill-session", "-t", "agentctl-XL-123"},
+		},
+	}
+	if !reflect.DeepEqual(exec.calls, want) {
+		t.Fatalf("commands = %#v, want %#v", exec.calls, want)
+	}
+}
+
 func TestServiceMethodsReturnExecutorErrors(t *testing.T) {
 	tests := []struct {
 		name string
@@ -154,6 +174,12 @@ func TestServiceMethodsReturnExecutorErrors(t *testing.T) {
 			name: "detach",
 			run: func(service *Service) error {
 				return service.Detach(context.Background(), "XL-123")
+			},
+		},
+		{
+			name: "kill",
+			run: func(service *Service) error {
+				return service.Kill(context.Background(), "XL-123")
 			},
 		},
 	}

@@ -186,6 +186,75 @@ func TestRunStartsLocalAgentWorkspace(t *testing.T) {
 	}
 }
 
+func TestRunRejectsInvalidTaskIDBeforeSideEffects(t *testing.T) {
+	tmp := t.TempDir()
+	cfg := testRunConfig(tmp)
+	invalidTaskIDs := []string{
+		"",
+		" ",
+		"foo/bar",
+		"../other",
+		"bad id",
+		"bad:id",
+		filepath.Join(tmp, "absolute"),
+		`foo\bar`,
+	}
+
+	for _, taskID := range invalidTaskIDs {
+		t.Run(taskID, func(t *testing.T) {
+			fakes := newRunFakes(cfg, time.Date(2026, 6, 5, 12, 34, 56, 0, time.UTC))
+			fakes.env["GITLAB_CONTROL_PAT"] = "control-pat"
+
+			cmd := newRunCommandWithDeps(fakes.deps())
+			cmd.SetOut(io.Discard)
+			cmd.SetErr(io.Discard)
+			cmd.SetArgs([]string{taskID, "--repo", "backend"})
+
+			err := cmd.Execute()
+			if err == nil {
+				t.Fatal("error = nil, want invalid task id")
+			}
+			if !strings.Contains(err.Error(), "invalid task id") {
+				t.Fatalf("error = %v, want invalid task id message", err)
+			}
+			if fakes.loadConfigCalls != 0 {
+				t.Fatalf("load config calls = %d, want 0", fakes.loadConfigCalls)
+			}
+			assertNoRunSideEffects(t, fakes)
+
+			envPath := filepath.Join(cfg.StateDir, "env", taskID+".env")
+			if _, err := os.Stat(envPath); !os.IsNotExist(err) {
+				t.Fatalf("env file stat = %v, want not exists", err)
+			}
+		})
+	}
+}
+
+func TestRunAcceptsValidTaskIDs(t *testing.T) {
+	for _, taskID := range []string{"XL-123", "abc_123", "abc.123"} {
+		t.Run(taskID, func(t *testing.T) {
+			tmp := t.TempDir()
+			cfg := testRunConfig(tmp)
+			fakes := newRunFakes(cfg, time.Date(2026, 6, 5, 12, 34, 56, 0, time.UTC))
+			fakes.env["GITLAB_CONTROL_PAT"] = "control-pat"
+			fakes.createdToken = tokenbroker.CreatedToken{
+				ID:    "98765",
+				Token: "glpat-created-secret",
+				Name:  "agent-" + taskID + "-1780662896",
+			}
+
+			cmd := newRunCommandWithDeps(fakes.deps())
+			cmd.SetOut(io.Discard)
+			cmd.SetErr(io.Discard)
+			cmd.SetArgs([]string{taskID, "--repo", "backend"})
+
+			if err := cmd.Execute(); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
 func TestRunRevokesTokenWhenLaterStepFails(t *testing.T) {
 	tmp := t.TempDir()
 	cfg := testRunConfig(tmp)
@@ -270,8 +339,100 @@ func TestRunErrorsWhenControlPATIsMissingBeforeTokenCreation(t *testing.T) {
 	if !strings.Contains(err.Error(), "GITLAB_CONTROL_PAT is required") {
 		t.Fatalf("error = %v, want missing PAT message", err)
 	}
+	if len(fakes.prepareCalls) != 0 {
+		t.Fatalf("prepare calls = %#v, want none", fakes.prepareCalls)
+	}
 	if len(fakes.tokenClients) != 0 {
 		t.Fatalf("token clients = %d, want none", len(fakes.tokenClients))
+	}
+}
+
+func TestRunStopsTmuxAndRevokesTokenWhenStateSaveFails(t *testing.T) {
+	tmp := t.TempDir()
+	cfg := testRunConfig(tmp)
+	fakes := newRunFakes(cfg, time.Date(2026, 6, 5, 12, 34, 56, 0, time.UTC))
+	fakes.env["GITLAB_CONTROL_PAT"] = "control-pat"
+	saveErr := errors.New("state save failed")
+	fakes.saveErr = saveErr
+
+	cmd := newRunCommandWithDeps(fakes.deps())
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"XL-123", "--repo", "backend"})
+
+	err := cmd.Execute()
+	if !errors.Is(err, saveErr) {
+		t.Fatalf("error = %v, want save error", err)
+	}
+	if !reflect.DeepEqual(fakes.tmuxStops, []string{"XL-123"}) {
+		t.Fatalf("tmux stops = %#v, want task stop", fakes.tmuxStops)
+	}
+	if len(fakes.tokenClients) != 1 {
+		t.Fatalf("token clients = %d, want 1", len(fakes.tokenClients))
+	}
+	tokenClient := fakes.tokenClients[0]
+	if !reflect.DeepEqual(tokenClient.revokeCalls, []revokeTokenCall{{
+		projectID: "123",
+		tokenID:   "98765",
+	}}) {
+		t.Fatalf("revoke calls = %#v", tokenClient.revokeCalls)
+	}
+}
+
+func TestRunStateSaveFailureReportsRevokeFailure(t *testing.T) {
+	tmp := t.TempDir()
+	cfg := testRunConfig(tmp)
+	fakes := newRunFakes(cfg, time.Date(2026, 6, 5, 12, 34, 56, 0, time.UTC))
+	fakes.env["GITLAB_CONTROL_PAT"] = "control-pat"
+	saveErr := errors.New("state save failed")
+	revokeErr := errors.New("token revoke failed")
+	fakes.saveErr = saveErr
+	fakes.revokeErr = revokeErr
+
+	cmd := newRunCommandWithDeps(fakes.deps())
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"XL-123", "--repo", "backend"})
+
+	err := cmd.Execute()
+	if !errors.Is(err, saveErr) {
+		t.Fatalf("error = %v, want save error", err)
+	}
+	if !errors.Is(err, revokeErr) {
+		t.Fatalf("error = %v, want revoke error", err)
+	}
+	if !strings.Contains(err.Error(), "state save failed") || !strings.Contains(err.Error(), "token revoke failed") {
+		t.Fatalf("error = %v, want save and revoke messages", err)
+	}
+}
+
+func TestRunWithRealDockerInvocationDoesNotPutTokenInTmuxArgv(t *testing.T) {
+	tmp := t.TempDir()
+	cfg := testRunConfig(tmp)
+	fakes := newRunFakes(cfg, time.Date(2026, 6, 5, 12, 34, 56, 0, time.UTC))
+	tokenValue := "glpat-real-runtime-secret"
+	fakes.env["GITLAB_CONTROL_PAT"] = "control-pat"
+	fakes.createdToken = tokenbroker.CreatedToken{
+		ID:    "98765",
+		Token: tokenValue,
+		Name:  "agent-XL-123-1780662896",
+	}
+	deps := fakes.deps()
+	deps.dockerInvocationFor = runtime.DockerInvocationFor
+
+	cmd := newRunCommandWithDeps(deps)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"XL-123", "--repo", "backend"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if len(fakes.tmuxStarts) != 1 {
+		t.Fatalf("tmux starts = %d, want 1", len(fakes.tmuxStarts))
+	}
+	if strings.Contains(strings.Join(fakes.tmuxStarts[0].command, "\x00"), tokenValue) {
+		t.Fatalf("tmux command contains token value: %#v", fakes.tmuxStarts[0].command)
 	}
 }
 
@@ -334,7 +495,11 @@ type runFakes struct {
 	createdToken    tokenbroker.CreatedToken
 	dockerOptions   []runtime.DockerOptions
 	tmuxStarts      []tmuxStartCall
+	tmuxStops       []string
 	tmuxErr         error
+	stopTmuxErr     error
+	saveErr         error
+	revokeErr       error
 	savedTasks      []state.Task
 }
 
@@ -378,6 +543,7 @@ func (f *runFakes) deps() runDeps {
 				baseURL:     baseURL,
 				controlPAT:  controlPAT,
 				createToken: f.createdToken,
+				revokeErr:   f.revokeErr,
 			}
 			f.tokenClients = append(f.tokenClients, client)
 			return client
@@ -400,13 +566,40 @@ func (f *runFakes) deps() runDeps {
 			})
 			return f.tmuxErr
 		},
+		stopTmux: func(_ context.Context, taskID string) error {
+			f.tmuxStops = append(f.tmuxStops, taskID)
+			return f.stopTmuxErr
+		},
 		saveState: func(stateDir string, task state.Task) error {
 			if stateDir != f.cfg.StateDir {
 				return errors.New("unexpected state dir")
 			}
 			f.savedTasks = append(f.savedTasks, task)
-			return nil
+			return f.saveErr
 		},
+	}
+}
+
+func assertNoRunSideEffects(t *testing.T, fakes *runFakes) {
+	t.Helper()
+
+	if len(fakes.prepareCalls) != 0 {
+		t.Fatalf("prepare calls = %#v, want none", fakes.prepareCalls)
+	}
+	if len(fakes.tokenClients) != 0 {
+		t.Fatalf("token clients = %d, want none", len(fakes.tokenClients))
+	}
+	if len(fakes.dockerOptions) != 0 {
+		t.Fatalf("docker options = %#v, want none", fakes.dockerOptions)
+	}
+	if len(fakes.tmuxStarts) != 0 {
+		t.Fatalf("tmux starts = %#v, want none", fakes.tmuxStarts)
+	}
+	if len(fakes.tmuxStops) != 0 {
+		t.Fatalf("tmux stops = %#v, want none", fakes.tmuxStops)
+	}
+	if len(fakes.savedTasks) != 0 {
+		t.Fatalf("saved tasks = %#v, want none", fakes.savedTasks)
 	}
 }
 
@@ -432,6 +625,7 @@ type fakeRunTokenClient struct {
 	baseURL     string
 	controlPAT  string
 	createToken tokenbroker.CreatedToken
+	revokeErr   error
 	createCalls []createTokenCall
 	revokeCalls []revokeTokenCall
 }
@@ -450,7 +644,7 @@ func (f *fakeRunTokenClient) RevokeProjectToken(_ context.Context, projectID, to
 		projectID: projectID,
 		tokenID:   tokenID,
 	})
-	return nil
+	return f.revokeErr
 }
 
 type tmuxStartCall struct {

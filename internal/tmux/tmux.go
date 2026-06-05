@@ -40,3 +40,7 @@ func (s *Service) Attach(ctx context.Context, taskID string) error {
 func (s *Service) Detach(ctx context.Context, taskID string) error {
 	return s.exec.Run(ctx, "tmux", "detach-client", "-s", SessionName(taskID))
 }
+
+func (s *Service) Kill(ctx context.Context, taskID string) error {
+	return s.exec.Run(ctx, "tmux", "kill-session", "-t", SessionName(taskID))
+}

@@ -2,9 +2,11 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -20,6 +22,8 @@ import (
 
 const defaultConfigPath = "~/.config/agentctl/config.yaml"
 
+var validRunTaskIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]*$`)
+
 type runTokenClient interface {
 	CreateProjectToken(ctx context.Context, projectID, name string, expiresAt time.Time) (tokenbroker.CreatedToken, error)
 	RevokeProjectToken(ctx context.Context, projectID, tokenID string) error
@@ -33,6 +37,7 @@ type runDeps struct {
 	newTokenClient      func(baseURL, controlPAT string) runTokenClient
 	dockerInvocationFor func(opts runtime.DockerOptions) (runtime.DockerInvocation, error)
 	startTmux           func(ctx context.Context, taskID, worktree string, command []string) error
+	stopTmux            func(ctx context.Context, taskID string) error
 	saveState           func(stateDir string, task state.Task) error
 }
 
@@ -55,6 +60,7 @@ func defaultRunDeps() runDeps {
 		},
 		dockerInvocationFor: runtime.DockerInvocationFor,
 		startTmux:           tmuxService.Start,
+		stopTmux:            tmuxService.Kill,
 		saveState: func(stateDir string, task state.Task) error {
 			return state.NewStore(stateDir).Save(task)
 		},
@@ -108,6 +114,10 @@ type runOptions struct {
 }
 
 func runLocalOrRemote(ctx context.Context, deps runDeps, opts runOptions) error {
+	if err := validateRunTaskID(opts.taskID); err != nil {
+		return err
+	}
+
 	if opts.remoteName != "" {
 		return fmt.Errorf("remote run %q is not implemented in Task 8", opts.remoteName)
 	}
@@ -135,15 +145,15 @@ func runLocalOrRemote(ctx context.Context, deps runDeps, opts runOptions) error 
 		defaultBranch = "main"
 	}
 
+	controlPAT := deps.getenv("GITLAB_CONTROL_PAT")
+	if controlPAT == "" {
+		return fmt.Errorf("GITLAB_CONTROL_PAT is required")
+	}
+
 	worktree := filepath.Join(cfg.BaseDir, opts.taskID)
 	gitDir := filepath.Join(repo.Path, ".git")
 	if err := deps.prepareWorktree(ctx, repo.Path, defaultBranch, opts.taskID, worktree); err != nil {
 		return err
-	}
-
-	controlPAT := deps.getenv("GITLAB_CONTROL_PAT")
-	if controlPAT == "" {
-		return fmt.Errorf("GITLAB_CONTROL_PAT is required")
 	}
 
 	now := deps.now()
@@ -199,11 +209,31 @@ func runLocalOrRemote(ctx context.Context, deps runDeps, opts runOptions) error 
 		CreatedAt:       now,
 	}
 	if err := deps.saveState(cfg.StateDir, task); err != nil {
-		return revokeOnFailure(err)
+		return cleanupAfterStateSaveFailure(ctx, deps, opts.taskID, tokenClient, repo.ProjectID, createdToken.ID, err)
 	}
 
 	tokenCreated = false
 	return nil
+}
+
+func validateRunTaskID(taskID string) error {
+	if !validRunTaskIDPattern.MatchString(taskID) {
+		return fmt.Errorf("invalid task id: %q", taskID)
+	}
+
+	return nil
+}
+
+func cleanupAfterStateSaveFailure(ctx context.Context, deps runDeps, taskID string, tokenClient runTokenClient, projectID, tokenID string, saveErr error) error {
+	errs := []error{saveErr}
+	if err := deps.stopTmux(ctx, taskID); err != nil {
+		errs = append(errs, fmt.Errorf("tmux cleanup failed: %w", err))
+	}
+	if err := tokenClient.RevokeProjectToken(ctx, projectID, tokenID); err != nil {
+		errs = append(errs, fmt.Errorf("token revoke cleanup failed: %w", err))
+	}
+
+	return errors.Join(errs...)
 }
 
 func writeDockerEnvFile(stateDir, taskID string, env []string) (string, error) {
