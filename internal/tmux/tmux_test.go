@@ -58,6 +58,19 @@ func TestStartRunsDetachedTmuxSessionInWorktree(t *testing.T) {
 	}
 }
 
+func TestStartRejectsEmptyCommandWithoutRunningExecutor(t *testing.T) {
+	exec := &fakeExecutor{}
+	service := NewService(exec)
+
+	err := service.Start(context.Background(), "XL-123", "/tmp/worktree", []string{})
+	if err == nil {
+		t.Error("expected error for empty command")
+	}
+	if len(exec.calls) != 0 {
+		t.Fatalf("commands = %#v, want no executor calls", exec.calls)
+	}
+}
+
 func TestAttachRunsTmuxAttachSession(t *testing.T) {
 	exec := &fakeExecutor{}
 	service := NewService(exec)

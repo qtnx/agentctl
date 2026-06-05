@@ -2,9 +2,12 @@ package tmux
 
 import (
 	"context"
+	"errors"
 
 	"github.com/your-org/agentctl/internal/execx"
 )
+
+var ErrEmptyCommand = errors.New("tmux command is empty")
 
 type Service struct {
 	exec execx.Executor
@@ -19,6 +22,10 @@ func SessionName(taskID string) string {
 }
 
 func (s *Service) Start(ctx context.Context, taskID, worktree string, command []string) error {
+	if len(command) == 0 {
+		return ErrEmptyCommand
+	}
+
 	args := []string{"new-session", "-d", "-s", SessionName(taskID), "-c", worktree}
 	args = append(args, command...)
 
