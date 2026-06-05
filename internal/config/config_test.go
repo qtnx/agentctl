@@ -35,7 +35,19 @@ repos:
 	if cfg.Repos["backend"].ProjectID != "123" {
 		t.Fatalf("project id = %q", cfg.Repos["backend"].ProjectID)
 	}
-	if cfg.StateDir == "" {
-		t.Fatal("expected default state dir")
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wantRepoPath := filepath.Join(home, "code/backend")
+	if cfg.Repos["backend"].Path != wantRepoPath {
+		t.Fatalf("repo path = %q, want %q", cfg.Repos["backend"].Path, wantRepoPath)
+	}
+
+	wantStateDir := filepath.Join(home, ".local/state/agentctl")
+	if cfg.StateDir != wantStateDir {
+		t.Fatalf("state dir = %q, want %q", cfg.StateDir, wantStateDir)
 	}
 }
