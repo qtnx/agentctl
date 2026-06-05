@@ -23,10 +23,6 @@ func NewRootCommand() *cobra.Command {
 	return cmd
 }
 
-func newCleanupCommand() *cobra.Command {
-	return &cobra.Command{Use: "cleanup TASK_ID", Short: "Clean up an agent workspace"}
-}
-
 func newTokenBrokerCommand() *cobra.Command {
 	return &cobra.Command{Use: "token-broker", Short: "Manage short-lived agent tokens"}
 }

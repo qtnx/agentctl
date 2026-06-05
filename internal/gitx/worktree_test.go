@@ -74,3 +74,34 @@ func TestPrepareWorktreeReturnsFetchErrorWithoutAddingWorktree(t *testing.T) {
 		t.Fatalf("commands = %#v, want %#v", exec.calls, want)
 	}
 }
+
+func TestRemoveWorktreeRunsForceWorktreeRemove(t *testing.T) {
+	exec := &fakeExecutor{}
+	service := NewService(exec)
+
+	err := service.RemoveWorktree(context.Background(), "/repo", "/worktrees/XL-123")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	want := []recordedCommand{
+		{
+			name: "git",
+			args: []string{"-C", "/repo", "worktree", "remove", "/worktrees/XL-123", "--force"},
+		},
+	}
+	if !reflect.DeepEqual(exec.calls, want) {
+		t.Fatalf("commands = %#v, want %#v", exec.calls, want)
+	}
+}
+
+func TestRemoveWorktreeReturnsExecutorError(t *testing.T) {
+	removeErr := errors.New("worktree remove failed")
+	exec := &fakeExecutor{err: removeErr}
+	service := NewService(exec)
+
+	err := service.RemoveWorktree(context.Background(), "/repo", "/worktrees/XL-123")
+	if !errors.Is(err, removeErr) {
+		t.Fatalf("error = %v, want %v", err, removeErr)
+	}
+}

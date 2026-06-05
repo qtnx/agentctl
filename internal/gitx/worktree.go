@@ -21,3 +21,7 @@ func (s *Service) PrepareWorktree(ctx context.Context, repoPath, defaultBranch, 
 
 	return s.exec.Run(ctx, "git", "-C", repoPath, "worktree", "add", worktree, "-b", "agent/"+taskID, "origin/"+defaultBranch)
 }
+
+func (s *Service) RemoveWorktree(ctx context.Context, repoPath, worktree string) error {
+	return s.exec.Run(ctx, "git", "-C", repoPath, "worktree", "remove", worktree, "--force")
+}
