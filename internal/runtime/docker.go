@@ -66,6 +66,8 @@ func DockerInvocationFor(opts DockerOptions) (DockerInvocation, error) {
 	args := []string{
 		"docker", "run",
 		"--rm",
+		"-i",
+		"-t",
 		"--name", "agent-" + taskID,
 		"--cap-drop=ALL",
 		"--security-opt", "no-new-privileges",
@@ -87,6 +89,7 @@ func DockerInvocationFor(opts DockerOptions) (DockerInvocation, error) {
 		"-v", worktree+":"+workspacePath+":rw",
 		"-v", gitDir+":"+gitDir+":rw",
 		"-w", workspacePath,
+		"--entrypoint", "bash",
 		image,
 	)
 

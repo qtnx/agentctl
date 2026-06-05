@@ -19,6 +19,8 @@ func TestDockerInvocationBuildsUntrustedRunCommandWithoutLeakingToken(t *testing
 
 	for _, want := range []string{
 		"--rm",
+		"-i",
+		"-t",
 		"--cap-drop=ALL",
 		"--pids-limit=1024",
 		"--memory=8g",
@@ -55,6 +57,13 @@ func TestDockerInvocationBuildsUntrustedRunCommandWithoutLeakingToken(t *testing
 	imageIndex := indexOf(args, "node:22-bookworm")
 	if imageIndex == -1 {
 		t.Fatalf("command = %#v, want default node image", args)
+	}
+	entrypointIndex := indexOf(args, "--entrypoint")
+	if entrypointIndex == -1 || entrypointIndex+1 >= len(args) || args[entrypointIndex+1] != "bash" {
+		t.Fatalf("command = %#v, want --entrypoint bash", args)
+	}
+	if entrypointIndex > imageIndex {
+		t.Fatalf("command = %#v, want --entrypoint bash before image", args)
 	}
 	commandSuffix := args[imageIndex+1:]
 	if len(commandSuffix) < 5 || commandSuffix[0] != "bash" || commandSuffix[1] != "-lc" {
