@@ -38,6 +38,7 @@ type runDeps struct {
 	dockerInvocationFor func(opts runtime.DockerOptions) (runtime.DockerInvocation, error)
 	startTmux           func(ctx context.Context, taskID, worktree string, command []string) error
 	stopTmux            func(ctx context.Context, taskID string) error
+	removeEnvFile       func(path string) error
 	saveState           func(stateDir string, task state.Task) error
 }
 
@@ -61,6 +62,7 @@ func defaultRunDeps() runDeps {
 		dockerInvocationFor: runtime.DockerInvocationFor,
 		startTmux:           tmuxService.Start,
 		stopTmux:            tmuxService.Kill,
+		removeEnvFile:       cleanupEnvFile,
 		saveState: func(stateDir string, task state.Task) error {
 			return state.NewStore(stateDir).Save(task)
 		},
@@ -167,7 +169,9 @@ func runLocalOrRemote(ctx context.Context, deps runDeps, opts runOptions) error 
 	tokenCreated := true
 	revokeOnFailure := func(failure error) error {
 		if failure != nil && tokenCreated {
-			_ = tokenClient.RevokeProjectToken(ctx, repo.ProjectID, createdToken.ID)
+			if err := tokenClient.RevokeProjectToken(ctx, repo.ProjectID, createdToken.ID); err != nil {
+				return joinCleanup(failure, "token revoke cleanup failed", err)
+			}
 		}
 		return failure
 	}
@@ -190,7 +194,7 @@ func runLocalOrRemote(ctx context.Context, deps runDeps, opts runOptions) error 
 
 	tmuxCommand := wrapDockerCommandWithEnvFile(envFile, invocation.Command)
 	if err := deps.startTmux(ctx, opts.taskID, worktree, tmuxCommand); err != nil {
-		_ = os.Remove(envFile)
+		err = joinCleanup(err, "env file remove cleanup failed", deps.removeEnvFile(envFile))
 		return revokeOnFailure(err)
 	}
 
@@ -209,7 +213,7 @@ func runLocalOrRemote(ctx context.Context, deps runDeps, opts runOptions) error 
 		CreatedAt:       now,
 	}
 	if err := deps.saveState(cfg.StateDir, task); err != nil {
-		return cleanupAfterStateSaveFailure(ctx, deps, opts.taskID, tokenClient, repo.ProjectID, createdToken.ID, err)
+		return cleanupAfterStateSaveFailure(ctx, deps, envFile, opts.taskID, tokenClient, repo.ProjectID, createdToken.ID, err)
 	}
 
 	tokenCreated = false
@@ -224,8 +228,11 @@ func validateRunTaskID(taskID string) error {
 	return nil
 }
 
-func cleanupAfterStateSaveFailure(ctx context.Context, deps runDeps, taskID string, tokenClient runTokenClient, projectID, tokenID string, saveErr error) error {
+func cleanupAfterStateSaveFailure(ctx context.Context, deps runDeps, envFile, taskID string, tokenClient runTokenClient, projectID, tokenID string, saveErr error) error {
 	errs := []error{saveErr}
+	if err := deps.removeEnvFile(envFile); err != nil {
+		errs = append(errs, fmt.Errorf("env file remove cleanup failed: %w", err))
+	}
 	if err := deps.stopTmux(ctx, taskID); err != nil {
 		errs = append(errs, fmt.Errorf("tmux cleanup failed: %w", err))
 	}
@@ -234,6 +241,27 @@ func cleanupAfterStateSaveFailure(ctx context.Context, deps runDeps, taskID stri
 	}
 
 	return errors.Join(errs...)
+}
+
+func joinCleanup(original error, label string, cleanupErr error) error {
+	if cleanupErr == nil {
+		return original
+	}
+
+	return errors.Join(original, fmt.Errorf("%s: %w", label, cleanupErr))
+}
+
+func cleanupEnvFile(envFile string) error {
+	if envFile == "" {
+		return nil
+	}
+
+	err := os.Remove(envFile)
+	if os.IsNotExist(err) {
+		return nil
+	}
+
+	return err
 }
 
 func writeDockerEnvFile(stateDir, taskID string, env []string) (string, error) {
@@ -261,14 +289,11 @@ func writeDockerEnvFile(stateDir, taskID string, env []string) (string, error) {
 	}
 	_, writeErr := file.WriteString(strings.Join(lines, "\n") + "\n")
 	closeErr := file.Close()
-	if writeErr != nil {
-		return "", writeErr
-	}
-	if closeErr != nil {
-		return "", closeErr
+	if writeErr != nil || closeErr != nil {
+		return "", joinCleanup(errors.Join(writeErr, closeErr), "env file cleanup failed", cleanupEnvFile(envFile))
 	}
 	if err := os.Chmod(envFile, 0600); err != nil {
-		return "", err
+		return "", joinCleanup(err, "env file cleanup failed", cleanupEnvFile(envFile))
 	}
 
 	return envFile, nil

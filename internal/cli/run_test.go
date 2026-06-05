@@ -296,6 +296,73 @@ func TestRunRevokesTokenWhenLaterStepFails(t *testing.T) {
 	}
 }
 
+func TestRunDockerInvocationFailureReportsRevokeFailure(t *testing.T) {
+	tmp := t.TempDir()
+	cfg := testRunConfig(tmp)
+	fakes := newRunFakes(cfg, time.Date(2026, 6, 5, 12, 34, 56, 0, time.UTC))
+	fakes.env["GITLAB_CONTROL_PAT"] = "control-pat"
+	dockerErr := errors.New("docker invocation failed")
+	revokeErr := errors.New("token revoke failed")
+	fakes.dockerErr = dockerErr
+	fakes.revokeErr = revokeErr
+
+	cmd := newRunCommandWithDeps(fakes.deps())
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"XL-123", "--repo", "backend"})
+
+	err := cmd.Execute()
+	if !errors.Is(err, dockerErr) {
+		t.Fatalf("error = %v, want docker error", err)
+	}
+	if !errors.Is(err, revokeErr) {
+		t.Fatalf("error = %v, want revoke error", err)
+	}
+	if !strings.Contains(err.Error(), "docker invocation failed") || !strings.Contains(err.Error(), "token revoke failed") {
+		t.Fatalf("error = %v, want docker and revoke messages", err)
+	}
+	if len(fakes.tokenClients) != 1 {
+		t.Fatalf("token clients = %d, want 1", len(fakes.tokenClients))
+	}
+	tokenClient := fakes.tokenClients[0]
+	if !reflect.DeepEqual(tokenClient.revokeCalls, []revokeTokenCall{{
+		projectID: "123",
+		tokenID:   "98765",
+	}}) {
+		t.Fatalf("revoke calls = %#v", tokenClient.revokeCalls)
+	}
+	if len(fakes.tmuxStarts) != 0 {
+		t.Fatalf("tmux starts = %#v, want none", fakes.tmuxStarts)
+	}
+}
+
+func TestRunTmuxStartFailureReportsEnvFileRemoveFailure(t *testing.T) {
+	tmp := t.TempDir()
+	cfg := testRunConfig(tmp)
+	fakes := newRunFakes(cfg, time.Date(2026, 6, 5, 12, 34, 56, 0, time.UTC))
+	fakes.env["GITLAB_CONTROL_PAT"] = "control-pat"
+	tmuxErr := errors.New("tmux failed")
+	removeErr := errors.New("env file remove failed")
+	fakes.tmuxErr = tmuxErr
+	fakes.removeEnvErr = removeErr
+
+	cmd := newRunCommandWithDeps(fakes.deps())
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"XL-123", "--repo", "backend"})
+
+	err := cmd.Execute()
+	if !errors.Is(err, tmuxErr) {
+		t.Fatalf("error = %v, want tmux error", err)
+	}
+	if !errors.Is(err, removeErr) {
+		t.Fatalf("error = %v, want remove error", err)
+	}
+	if !strings.Contains(err.Error(), "tmux failed") || !strings.Contains(err.Error(), "env file remove failed") {
+		t.Fatalf("error = %v, want tmux and remove messages", err)
+	}
+}
+
 func TestRunErrorsWhenRepoIsMissing(t *testing.T) {
 	tmp := t.TempDir()
 	cfg := testRunConfig(tmp)
@@ -376,6 +443,10 @@ func TestRunStopsTmuxAndRevokesTokenWhenStateSaveFails(t *testing.T) {
 		tokenID:   "98765",
 	}}) {
 		t.Fatalf("revoke calls = %#v", tokenClient.revokeCalls)
+	}
+	envPath := filepath.Join(cfg.StateDir, "env", "XL-123.env")
+	if _, err := os.Stat(envPath); !os.IsNotExist(err) {
+		t.Fatalf("env file stat after state save failure = %v, want not exists", err)
 	}
 }
 
@@ -494,12 +565,15 @@ type runFakes struct {
 	tokenClients    []*fakeRunTokenClient
 	createdToken    tokenbroker.CreatedToken
 	dockerOptions   []runtime.DockerOptions
+	dockerErr       error
 	tmuxStarts      []tmuxStartCall
 	tmuxStops       []string
 	tmuxErr         error
 	stopTmuxErr     error
 	saveErr         error
 	revokeErr       error
+	removeEnvErr    error
+	removeEnvCalls  []string
 	savedTasks      []state.Task
 }
 
@@ -550,6 +624,9 @@ func (f *runFakes) deps() runDeps {
 		},
 		dockerInvocationFor: func(opts runtime.DockerOptions) (runtime.DockerInvocation, error) {
 			f.dockerOptions = append(f.dockerOptions, opts)
+			if f.dockerErr != nil {
+				return runtime.DockerInvocation{}, f.dockerErr
+			}
 			return runtime.DockerInvocation{
 				Command: []string{"docker", "run", "--name", "agent-" + opts.TaskID},
 				Env: []string{
@@ -569,6 +646,13 @@ func (f *runFakes) deps() runDeps {
 		stopTmux: func(_ context.Context, taskID string) error {
 			f.tmuxStops = append(f.tmuxStops, taskID)
 			return f.stopTmuxErr
+		},
+		removeEnvFile: func(path string) error {
+			f.removeEnvCalls = append(f.removeEnvCalls, path)
+			if f.removeEnvErr != nil {
+				return f.removeEnvErr
+			}
+			return os.Remove(path)
 		},
 		saveState: func(stateDir string, task state.Task) error {
 			if stateDir != f.cfg.StateDir {
