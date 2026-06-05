@@ -31,15 +31,6 @@ type DockerInvocation struct {
 	Env     []string
 }
 
-func DockerCommand(opts DockerOptions) ([]string, error) {
-	invocation, err := DockerInvocationFor(opts)
-	if err != nil {
-		return nil, err
-	}
-
-	return invocation.Command, nil
-}
-
 func DockerInvocationFor(opts DockerOptions) (DockerInvocation, error) {
 	taskID, err := requiredOption("TaskID", opts.TaskID)
 	if err != nil {
@@ -64,6 +55,9 @@ func DockerInvocationFor(opts DockerOptions) (DockerInvocation, error) {
 	image := strings.TrimSpace(opts.Image)
 	if image == "" {
 		image = defaultDockerImage
+	}
+	if strings.HasPrefix(image, "-") {
+		return DockerInvocation{}, fmt.Errorf("Image %q must not start with -", image)
 	}
 
 	args := []string{
@@ -198,8 +192,11 @@ func defaultDockerScript() string {
 		`}`,
 		`trap cleanup EXIT`,
 		`if [ -n "${GITLAB_HOST:-}" ] && [ -n "${GITLAB_REMOTE_PATH:-}" ]; then`,
-		`  remote_path="${GITLAB_REMOTE_PATH%.git}"`,
-		`  git remote set-url origin "https://${GITLAB_HOST}/${remote_path}.git"`,
+		`  export GIT_CONFIG_COUNT=2`,
+		`  export GIT_CONFIG_KEY_0="url.https://${GITLAB_HOST}/.insteadOf"`,
+		`  export GIT_CONFIG_VALUE_0="git@${GITLAB_HOST}:"`,
+		`  export GIT_CONFIG_KEY_1="url.https://${GITLAB_HOST}/.insteadOf"`,
+		`  export GIT_CONFIG_VALUE_1="ssh://git@${GITLAB_HOST}/"`,
 		`  askpass_path="$(mktemp)"`,
 		`  cat > "${askpass_path}" <<'EOF'`,
 		`#!/usr/bin/env sh`,

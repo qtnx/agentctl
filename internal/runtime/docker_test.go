@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func TestDockerCommandBuildsUntrustedRunCommandWithoutLeakingToken(t *testing.T) {
+func TestDockerInvocationBuildsUntrustedRunCommandWithoutLeakingToken(t *testing.T) {
 	invocation, err := DockerInvocationFor(validDockerOptions())
 	if err != nil {
 		t.Fatal(err)
@@ -66,8 +66,9 @@ func TestDockerCommandBuildsUntrustedRunCommandWithoutLeakingToken(t *testing.T)
 
 	script := commandSuffix[2]
 	for _, want := range []string{
-		"git remote set-url origin",
-		`https://${GITLAB_HOST}/${remote_path}.git`,
+		"GIT_CONFIG_COUNT",
+		`url.https://${GITLAB_HOST}/.insteadOf`,
+		`git@${GITLAB_HOST}:`,
 		"GIT_ASKPASS",
 		"GIT_TERMINAL_PROMPT",
 		`exec "$@"`,
@@ -77,6 +78,7 @@ func TestDockerCommandBuildsUntrustedRunCommandWithoutLeakingToken(t *testing.T)
 		}
 	}
 	for _, banned := range []string{
+		"git remote set-url",
 		`oauth2:${GITLAB_TOKEN}@`,
 		"glpat-secret",
 	} {
@@ -86,7 +88,7 @@ func TestDockerCommandBuildsUntrustedRunCommandWithoutLeakingToken(t *testing.T)
 	}
 }
 
-func TestDockerCommandRejectsMissingRequiredOptions(t *testing.T) {
+func TestDockerInvocationRejectsMissingRequiredOptions(t *testing.T) {
 	tests := []struct {
 		name   string
 		update func(*DockerOptions)
@@ -127,7 +129,7 @@ func TestDockerCommandRejectsMissingRequiredOptions(t *testing.T) {
 			opts := validDockerOptions()
 			tt.update(&opts)
 
-			_, err := DockerCommand(opts)
+			_, err := DockerInvocationFor(opts)
 			if err == nil {
 				t.Fatal("expected error")
 			}
@@ -138,16 +140,17 @@ func TestDockerCommandRejectsMissingRequiredOptions(t *testing.T) {
 	}
 }
 
-func TestDockerCommandValidatesTaskIDForContainerName(t *testing.T) {
+func TestDockerInvocationValidatesTaskIDForContainerName(t *testing.T) {
 	for _, taskID := range []string{"XL-123", "abc_123", "abc.123"} {
 		t.Run("valid "+taskID, func(t *testing.T) {
 			opts := validDockerOptions()
 			opts.TaskID = taskID
 
-			args, err := DockerCommand(opts)
+			invocation, err := DockerInvocationFor(opts)
 			if err != nil {
 				t.Fatal(err)
 			}
+			args := invocation.Command
 			if !containsSequence(args, []string{"--name", "agent-" + taskID}) {
 				t.Fatalf("command = %#v, want container name for %q", args, taskID)
 			}
@@ -159,12 +162,29 @@ func TestDockerCommandValidatesTaskIDForContainerName(t *testing.T) {
 			opts := validDockerOptions()
 			opts.TaskID = taskID
 
-			_, err := DockerCommand(opts)
+			_, err := DockerInvocationFor(opts)
 			if err == nil {
 				t.Fatal("expected error")
 			}
 			if !strings.Contains(err.Error(), "TaskID") {
 				t.Fatalf("error = %v, want TaskID validation", err)
+			}
+		})
+	}
+}
+
+func TestDockerInvocationRejectsLeadingDashImage(t *testing.T) {
+	for _, image := range []string{"--privileged", "-bad"} {
+		t.Run(image, func(t *testing.T) {
+			opts := validDockerOptions()
+			opts.Image = image
+
+			_, err := DockerInvocationFor(opts)
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			if !strings.Contains(err.Error(), "Image") {
+				t.Fatalf("error = %v, want Image validation", err)
 			}
 		})
 	}
@@ -229,15 +249,16 @@ func TestDockerInvocationRejectsDisallowedEnvVars(t *testing.T) {
 	}
 }
 
-func TestDockerCommandRunsSetupBeforeCustomCommand(t *testing.T) {
+func TestDockerInvocationRunsSetupBeforeCustomCommand(t *testing.T) {
 	opts := validDockerOptions()
 	opts.Image = "golang:1.22-bookworm"
 	opts.Command = []string{"go", "test", "./..."}
 
-	args, err := DockerCommand(opts)
+	invocation, err := DockerInvocationFor(opts)
 	if err != nil {
 		t.Fatal(err)
 	}
+	args := invocation.Command
 
 	imageIndex := indexOf(args, "golang:1.22-bookworm")
 	if imageIndex == -1 {
@@ -248,8 +269,11 @@ func TestDockerCommandRunsSetupBeforeCustomCommand(t *testing.T) {
 	if len(got) < 7 || got[0] != "bash" || got[1] != "-lc" {
 		t.Fatalf("command suffix = %#v, want bash -lc setup -- custom command", got)
 	}
-	if !strings.Contains(got[2], "git remote set-url origin") || !strings.Contains(got[2], `exec "$@"`) {
-		t.Fatalf("setup script = %q, want git setup and exec argv", got[2])
+	if strings.Contains(got[2], "git remote set-url") {
+		t.Fatalf("setup script = %q, must not mutate git remote", got[2])
+	}
+	if !strings.Contains(got[2], "GIT_CONFIG_COUNT") || !strings.Contains(got[2], `exec "$@"`) {
+		t.Fatalf("setup script = %q, want process git config and exec argv", got[2])
 	}
 	if got[3] != "--" {
 		t.Fatalf("command suffix = %#v, want -- before custom command", got)
