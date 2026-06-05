@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -11,7 +12,6 @@ import (
 	cleanuppkg "github.com/your-org/agentctl/internal/cleanup"
 	"github.com/your-org/agentctl/internal/config"
 	"github.com/your-org/agentctl/internal/execx"
-	"github.com/your-org/agentctl/internal/gitx"
 	"github.com/your-org/agentctl/internal/remote"
 	"github.com/your-org/agentctl/internal/state"
 	"github.com/your-org/agentctl/internal/tmux"
@@ -31,19 +31,22 @@ func newCleanupCommand() *cobra.Command {
 }
 
 func defaultCleanupDeps() cleanupDeps {
-	exec := execx.LocalExecutor{}
-	gitService := gitx.NewService(exec)
-	tmuxService := tmux.NewService(exec)
-	remoteService := remote.NewService(exec)
+	localExec := execx.LocalExecutor{}
+	commandRunner := localCleanupCommandRunner
+	remoteService := remote.NewService(localExec)
 	service := cleanuppkg.NewService(cleanuppkg.Deps{
 		RevokeToken: func(ctx context.Context, baseURL, controlPAT, projectID, tokenID string) error {
 			return tokenbroker.NewGitLabClient(baseURL, controlPAT, nil).RevokeProjectToken(ctx, projectID, tokenID)
 		},
 		RemoveContainer: func(ctx context.Context, containerName string) error {
-			return exec.Run(ctx, "docker", "rm", "-f", containerName)
+			return removeDockerContainer(ctx, commandRunner, containerName)
 		},
-		KillSession:    tmuxService.Kill,
-		RemoveWorktree: gitService.RemoveWorktree,
+		KillSession: func(ctx context.Context, taskID string) error {
+			return killTmuxSession(ctx, commandRunner, taskID)
+		},
+		RemoveWorktree: func(ctx context.Context, repoPath, worktree string) error {
+			return removeGitWorktree(ctx, commandRunner, repoPath, worktree)
+		},
 		DeleteState: func(stateDir, taskID string) error {
 			return state.NewStore(stateDir).Delete(taskID)
 		},
@@ -58,6 +61,60 @@ func defaultCleanupDeps() cleanupDeps {
 		runCleanup:    service.Cleanup,
 		forwardRemote: remoteService.Run,
 	}
+}
+
+type cleanupCommandRunner func(ctx context.Context, name string, args ...string) ([]byte, error)
+
+func localCleanupCommandRunner(ctx context.Context, name string, args ...string) ([]byte, error) {
+	return exec.CommandContext(ctx, name, args...).CombinedOutput()
+}
+
+func removeDockerContainer(ctx context.Context, runner cleanupCommandRunner, containerName string) error {
+	args := []string{"rm", "-f", containerName}
+	output, err := runner(ctx, "docker", args...)
+	if err == nil {
+		return nil
+	}
+	if outputContains(output, "no such container") {
+		return cleanuppkg.ErrAlreadyRemoved
+	}
+	return cleanupCommandError("docker", args, output, err)
+}
+
+func killTmuxSession(ctx context.Context, runner cleanupCommandRunner, taskID string) error {
+	args := []string{"kill-session", "-t", tmux.SessionName(taskID)}
+	output, err := runner(ctx, "tmux", args...)
+	if err == nil {
+		return nil
+	}
+	if outputContains(output, "can't find session") || outputContains(output, "no server running") {
+		return cleanuppkg.ErrAlreadyRemoved
+	}
+	return cleanupCommandError("tmux", args, output, err)
+}
+
+func removeGitWorktree(ctx context.Context, runner cleanupCommandRunner, repoPath, worktree string) error {
+	args := []string{"-C", repoPath, "worktree", "remove", worktree, "--force"}
+	output, err := runner(ctx, "git", args...)
+	if err == nil {
+		return nil
+	}
+	if outputContains(output, "not a working tree") || outputContains(output, "not a worktree") {
+		return cleanuppkg.ErrAlreadyRemoved
+	}
+	return cleanupCommandError("git", args, output, err)
+}
+
+func outputContains(output []byte, needle string) bool {
+	return strings.Contains(strings.ToLower(string(output)), needle)
+}
+
+func cleanupCommandError(name string, args []string, output []byte, err error) error {
+	message := strings.TrimSpace(string(output))
+	if message == "" {
+		return fmt.Errorf("%s %s failed: %w", name, strings.Join(args, " "), err)
+	}
+	return fmt.Errorf("%s %s failed: %w: %s", name, strings.Join(args, " "), err, message)
 }
 
 func newCleanupCommandWithDeps(deps cleanupDeps) *cobra.Command {

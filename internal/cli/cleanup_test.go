@@ -276,6 +276,72 @@ func TestRemoteCleanupForwardsConfiguredRemoteConfigPath(t *testing.T) {
 	}
 }
 
+func TestCleanupCommandAdaptersMapAlreadyRemovedErrors(t *testing.T) {
+	commandErr := errors.New("exit 1")
+	tests := []struct {
+		name string
+		run  func(cleanupCommandRunner) error
+		out  string
+	}{
+		{
+			name: "docker missing container",
+			run: func(runner cleanupCommandRunner) error {
+				return removeDockerContainer(context.Background(), runner, "agent-XL-123")
+			},
+			out: "Error response from daemon: No such container: agent-XL-123\n",
+		},
+		{
+			name: "tmux missing session",
+			run: func(runner cleanupCommandRunner) error {
+				return killTmuxSession(context.Background(), runner, "XL-123")
+			},
+			out: "can't find session: agentctl-XL-123\n",
+		},
+		{
+			name: "tmux no server",
+			run: func(runner cleanupCommandRunner) error {
+				return killTmuxSession(context.Background(), runner, "XL-123")
+			},
+			out: "no server running on /tmp/tmux-501/default\n",
+		},
+		{
+			name: "git missing worktree",
+			run: func(runner cleanupCommandRunner) error {
+				return removeGitWorktree(context.Background(), runner, "/repo/backend", "/worktrees/XL-123")
+			},
+			out: "fatal: '/worktrees/XL-123' is not a working tree\n",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.run(func(context.Context, string, ...string) ([]byte, error) {
+				return []byte(tt.out), commandErr
+			})
+			if !errors.Is(err, cleanuppkg.ErrAlreadyRemoved) {
+				t.Fatalf("error = %v, want %v", err, cleanuppkg.ErrAlreadyRemoved)
+			}
+		})
+	}
+}
+
+func TestCleanupCommandAdaptersKeepUnknownErrors(t *testing.T) {
+	commandErr := errors.New("exit 1")
+	err := removeDockerContainer(context.Background(), func(context.Context, string, ...string) ([]byte, error) {
+		return []byte("permission denied\n"), commandErr
+	}, "agent-XL-123")
+
+	if !errors.Is(err, commandErr) {
+		t.Fatalf("error = %v, want command error", err)
+	}
+	if errors.Is(err, cleanuppkg.ErrAlreadyRemoved) {
+		t.Fatalf("error = %v, must not be already removed", err)
+	}
+	if !strings.Contains(err.Error(), "permission denied") {
+		t.Fatalf("error = %v, want command output", err)
+	}
+}
+
 func testCleanupConfig(tmp string) *config.Config {
 	return &config.Config{
 		BaseDir:  filepath.Join(tmp, "worktrees"),
