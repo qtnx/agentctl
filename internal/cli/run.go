@@ -14,6 +14,7 @@ import (
 	"github.com/your-org/agentctl/internal/config"
 	"github.com/your-org/agentctl/internal/execx"
 	"github.com/your-org/agentctl/internal/gitx"
+	"github.com/your-org/agentctl/internal/remote"
 	"github.com/your-org/agentctl/internal/runtime"
 	"github.com/your-org/agentctl/internal/state"
 	"github.com/your-org/agentctl/internal/tmux"
@@ -40,6 +41,7 @@ type runDeps struct {
 	stopTmux            func(ctx context.Context, taskID string) error
 	removeEnvFile       func(path string) error
 	saveState           func(stateDir string, task state.Task) error
+	forwardRemote       func(ctx context.Context, target remote.Target, interactive bool, args ...string) error
 }
 
 func newRunCommand() *cobra.Command {
@@ -50,6 +52,7 @@ func defaultRunDeps() runDeps {
 	exec := execx.LocalExecutor{}
 	gitService := gitx.NewService(exec)
 	tmuxService := tmux.NewService(exec)
+	remoteService := remote.NewService(exec)
 
 	return runDeps{
 		loadConfig:      config.Load,
@@ -66,6 +69,7 @@ func defaultRunDeps() runDeps {
 		saveState: func(stateDir string, task state.Task) error {
 			return state.NewStore(stateDir).Save(task)
 		},
+		forwardRemote: remoteService.Run,
 	}
 }
 
@@ -131,7 +135,7 @@ func runLocalOrRemote(ctx context.Context, deps runDeps, opts runOptions) error 
 	}
 
 	if opts.remoteName != "" {
-		return fmt.Errorf("remote run %q is not implemented in Task 8", opts.remoteName)
+		return runRemote(ctx, deps, opts)
 	}
 
 	if opts.risk != "untrusted" {
@@ -235,6 +239,55 @@ func runLocalOrRemote(ctx context.Context, deps runDeps, opts runOptions) error 
 
 	tokenCreated = false
 	return nil
+}
+
+func runRemote(ctx context.Context, deps runDeps, opts runOptions) error {
+	cfg, err := deps.loadConfig(opts.configPath)
+	if err != nil {
+		return err
+	}
+
+	target, err := remoteTargetFromConfig(cfg, opts.remoteName)
+	if err != nil {
+		return err
+	}
+
+	args := []string{"run", opts.taskID}
+	if opts.repoName != "" {
+		args = append(args, "--repo", opts.repoName)
+	}
+	if opts.agent != "" {
+		args = append(args, "--agent", opts.agent)
+	}
+	if opts.risk != "" {
+		args = append(args, "--risk", opts.risk)
+	}
+	if opts.templateName != "" {
+		args = append(args, "--template", opts.templateName)
+	}
+	if opts.configPath != "" {
+		args = append(args, "--config", opts.configPath)
+	}
+
+	return deps.forwardRemote(ctx, target, false, args...)
+}
+
+func remoteTargetFromConfig(cfg *config.Config, remoteName string) (remote.Target, error) {
+	remoteConfig, ok := cfg.Remotes[remoteName]
+	if !ok {
+		return remote.Target{}, fmt.Errorf("remote %q not found in config", remoteName)
+	}
+
+	host := strings.TrimSpace(remoteConfig.Host)
+	if host == "" {
+		return remote.Target{}, fmt.Errorf("remote %q host is required", remoteName)
+	}
+
+	return remote.Target{
+		Host:         host,
+		User:         strings.TrimSpace(remoteConfig.User),
+		AgentctlPath: strings.TrimSpace(remoteConfig.AgentctlPath),
+	}, nil
 }
 
 func runRuntimeFor(cfg *config.Config, opts runOptions) (runRuntimeSelection, error) {

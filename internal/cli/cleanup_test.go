@@ -12,6 +12,7 @@ import (
 
 	cleanuppkg "github.com/your-org/agentctl/internal/cleanup"
 	"github.com/your-org/agentctl/internal/config"
+	"github.com/your-org/agentctl/internal/remote"
 	"github.com/your-org/agentctl/internal/state"
 )
 
@@ -174,6 +175,56 @@ func TestCleanupMissingRepoInConfigSurfacesAndStillCallsCleanupService(t *testin
 	}
 }
 
+func TestRemoteCleanupForwardsNonInteractiveSSHWithoutLocalCleanup(t *testing.T) {
+	tmp := t.TempDir()
+	cfg := testCleanupConfig(tmp)
+	configPath := filepath.Join(tmp, "config.yaml")
+	cfg.Remotes = map[string]config.Remote{
+		"buildbox-1": {
+			Host:         "buildbox-1.example.com",
+			User:         "deploy",
+			AgentctlPath: "/usr/local/bin/agentctl",
+		},
+	}
+	fakes := &cleanupCLIFakes{
+		cfg:  cfg,
+		task: cleanupCLITestTask(),
+		env:  map[string]string{"GITLAB_CONTROL_PAT": "control-pat"},
+	}
+
+	cmd := newCleanupCommandWithDeps(fakes.deps())
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"XL-123", "--remote", "buildbox-1", "--config", configPath})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	if !reflect.DeepEqual(fakes.loadConfigPaths, []string{configPath}) {
+		t.Fatalf("config paths = %#v, want remote config load", fakes.loadConfigPaths)
+	}
+	wantCall := cleanupRemoteCall{
+		target: remote.Target{
+			Host:         "buildbox-1.example.com",
+			User:         "deploy",
+			AgentctlPath: "/usr/local/bin/agentctl",
+		},
+		interactive: false,
+		args:        []string{"cleanup", "XL-123", "--config", configPath},
+	}
+	if !reflect.DeepEqual(fakes.remoteCalls, []cleanupRemoteCall{wantCall}) {
+		t.Fatalf("remote calls = %#v, want %#v", fakes.remoteCalls, []cleanupRemoteCall{wantCall})
+	}
+	assertNoForwardedRemoteFlag(t, fakes.remoteCalls[0].args)
+	if len(fakes.loadTaskCalls) != 0 {
+		t.Fatalf("load task calls = %#v, want none", fakes.loadTaskCalls)
+	}
+	if len(fakes.cleanupCalls) != 0 {
+		t.Fatalf("cleanup calls = %#v, want none", fakes.cleanupCalls)
+	}
+}
+
 func testCleanupConfig(tmp string) *config.Config {
 	return &config.Config{
 		BaseDir:  filepath.Join(tmp, "worktrees"),
@@ -214,6 +265,8 @@ type cleanupCLIFakes struct {
 	loadTaskErr     error
 	cleanupCalls    []cleanuppkg.Request
 	cleanupErr      error
+	remoteCalls     []cleanupRemoteCall
+	remoteErr       error
 }
 
 func (f *cleanupCLIFakes) deps() cleanupDeps {
@@ -239,10 +292,24 @@ func (f *cleanupCLIFakes) deps() cleanupDeps {
 			}
 			return req.RepoLookupError
 		},
+		forwardRemote: func(_ context.Context, target remote.Target, interactive bool, args ...string) error {
+			f.remoteCalls = append(f.remoteCalls, cleanupRemoteCall{
+				target:      target,
+				interactive: interactive,
+				args:        append([]string(nil), args...),
+			})
+			return f.remoteErr
+		},
 	}
 }
 
 type loadCleanupTaskCall struct {
 	stateDir string
 	taskID   string
+}
+
+type cleanupRemoteCall struct {
+	target      remote.Target
+	interactive bool
+	args        []string
 }

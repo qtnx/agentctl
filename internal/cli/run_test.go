@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/your-org/agentctl/internal/config"
+	"github.com/your-org/agentctl/internal/remote"
 	"github.com/your-org/agentctl/internal/runtime"
 	"github.com/your-org/agentctl/internal/state"
 	"github.com/your-org/agentctl/internal/tokenbroker"
@@ -630,36 +631,93 @@ func TestRunWithRealDockerInvocationDoesNotPutTokenInTmuxArgv(t *testing.T) {
 	}
 }
 
-func TestRunRemoteReturnsNotImplementedWithoutStartingLocalServices(t *testing.T) {
+func TestRemoteRunForwardsResolvedConfigWithoutLocalServices(t *testing.T) {
 	tmp := t.TempDir()
 	cfg := testRunConfig(tmp)
+	configPath := filepath.Join(tmp, "config.yaml")
+	cfg.Remotes = map[string]config.Remote{
+		"buildbox-1": {
+			Host:         "buildbox-1.example.com",
+			User:         "deploy",
+			AgentctlPath: "/usr/local/bin/agentctl",
+		},
+	}
 	fakes := newRunFakes(cfg, time.Date(2026, 6, 5, 12, 34, 56, 0, time.UTC))
 	fakes.env["GITLAB_CONTROL_PAT"] = "control-pat"
 
 	cmd := newRunCommandWithDeps(fakes.deps())
 	cmd.SetOut(io.Discard)
 	cmd.SetErr(io.Discard)
-	cmd.SetArgs([]string{"XL-123", "--repo", "backend", "--remote", "buildbox-1"})
+	cmd.SetArgs([]string{
+		"XL-123",
+		"--repo", "backend",
+		"--remote", "buildbox-1",
+		"--config", configPath,
+		"--template", "golang",
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	if !reflect.DeepEqual(fakes.loadConfigPaths, []string{configPath}) {
+		t.Fatalf("config paths = %#v, want remote config load", fakes.loadConfigPaths)
+	}
+	wantCall := runRemoteCall{
+		target: remote.Target{
+			Host:         "buildbox-1.example.com",
+			User:         "deploy",
+			AgentctlPath: "/usr/local/bin/agentctl",
+		},
+		interactive: false,
+		args: []string{
+			"run",
+			"XL-123",
+			"--repo",
+			"backend",
+			"--agent",
+			"codex",
+			"--risk",
+			"untrusted",
+			"--template",
+			"golang",
+			"--config",
+			configPath,
+		},
+	}
+	if !reflect.DeepEqual(fakes.remoteCalls, []runRemoteCall{wantCall}) {
+		t.Fatalf("remote calls = %#v, want %#v", fakes.remoteCalls, []runRemoteCall{wantCall})
+	}
+	assertNoForwardedRemoteFlag(t, fakes.remoteCalls[0].args)
+	assertNoRunSideEffects(t, fakes)
+}
+
+func TestRemoteRunMissingRemoteErrorsBeforeLocalServices(t *testing.T) {
+	tmp := t.TempDir()
+	cfg := testRunConfig(tmp)
+	configPath := filepath.Join(tmp, "config.yaml")
+	fakes := newRunFakes(cfg, time.Date(2026, 6, 5, 12, 34, 56, 0, time.UTC))
+	fakes.env["GITLAB_CONTROL_PAT"] = "control-pat"
+
+	cmd := newRunCommandWithDeps(fakes.deps())
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"XL-123", "--repo", "backend", "--remote", "missing", "--config", configPath})
 
 	err := cmd.Execute()
 	if err == nil {
-		t.Fatal("error = nil, want remote not implemented")
+		t.Fatal("error = nil, want missing remote")
 	}
-	if !strings.Contains(err.Error(), `remote run "buildbox-1" is not implemented`) {
-		t.Fatalf("error = %v, want remote not implemented message", err)
+	if !strings.Contains(err.Error(), `remote "missing" not found in config`) {
+		t.Fatalf("error = %v, want missing remote message", err)
 	}
-	if fakes.loadConfigCalls != 0 {
-		t.Fatalf("load config calls = %d, want 0", fakes.loadConfigCalls)
+	if !reflect.DeepEqual(fakes.loadConfigPaths, []string{configPath}) {
+		t.Fatalf("config paths = %#v, want remote config load", fakes.loadConfigPaths)
 	}
-	if len(fakes.prepareCalls) != 0 {
-		t.Fatalf("prepare calls = %#v, want none", fakes.prepareCalls)
+	if len(fakes.remoteCalls) != 0 {
+		t.Fatalf("remote calls = %#v, want none", fakes.remoteCalls)
 	}
-	if len(fakes.tokenClients) != 0 {
-		t.Fatalf("token clients = %d, want none", len(fakes.tokenClients))
-	}
-	if len(fakes.tmuxStarts) != 0 {
-		t.Fatalf("tmux starts = %#v, want none", fakes.tmuxStarts)
-	}
+	assertNoRunSideEffects(t, fakes)
 }
 
 func testRunConfig(tmp string) *config.Config {
@@ -698,6 +756,8 @@ type runFakes struct {
 	removeEnvErr    error
 	removeEnvCalls  []string
 	savedTasks      []state.Task
+	remoteCalls     []runRemoteCall
+	remoteErr       error
 }
 
 func newRunFakes(cfg *config.Config, now time.Time) *runFakes {
@@ -784,6 +844,14 @@ func (f *runFakes) deps() runDeps {
 			f.savedTasks = append(f.savedTasks, task)
 			return f.saveErr
 		},
+		forwardRemote: func(_ context.Context, target remote.Target, interactive bool, args ...string) error {
+			f.remoteCalls = append(f.remoteCalls, runRemoteCall{
+				target:      target,
+				interactive: interactive,
+				args:        append([]string(nil), args...),
+			})
+			return f.remoteErr
+		},
 	}
 }
 
@@ -807,6 +875,16 @@ func assertNoRunSideEffects(t *testing.T, fakes *runFakes) {
 	}
 	if len(fakes.savedTasks) != 0 {
 		t.Fatalf("saved tasks = %#v, want none", fakes.savedTasks)
+	}
+}
+
+func assertNoForwardedRemoteFlag(t *testing.T, args []string) {
+	t.Helper()
+
+	for _, arg := range args {
+		if arg == "--remote" {
+			t.Fatalf("forwarded args = %#v, must not include --remote", args)
+		}
 	}
 }
 
@@ -879,4 +957,10 @@ type tmuxStartCall struct {
 	taskID   string
 	worktree string
 	command  []string
+}
+
+type runRemoteCall struct {
+	target      remote.Target
+	interactive bool
+	args        []string
 }
