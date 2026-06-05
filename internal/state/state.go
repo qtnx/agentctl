@@ -2,11 +2,16 @@ package state
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 )
+
+var ErrInvalidTaskID = errors.New("invalid task id")
 
 type Task struct {
 	TaskID          string    `json:"task_id"`
@@ -32,6 +37,10 @@ func NewStore(stateDir string) *Store {
 }
 
 func (s *Store) Save(task Task) error {
+	if err := validateTaskID(task.TaskID); err != nil {
+		return err
+	}
+
 	if err := s.ensureTasksDir(); err != nil {
 		return err
 	}
@@ -51,6 +60,10 @@ func (s *Store) Save(task Task) error {
 }
 
 func (s *Store) Load(taskID string) (Task, error) {
+	if err := validateTaskID(taskID); err != nil {
+		return Task{}, err
+	}
+
 	data, err := os.ReadFile(s.taskPath(taskID))
 	if err != nil {
 		return Task{}, err
@@ -95,6 +108,10 @@ func (s *Store) List() ([]Task, error) {
 }
 
 func (s *Store) Delete(taskID string) error {
+	if err := validateTaskID(taskID); err != nil {
+		return err
+	}
+
 	return os.Remove(s.taskPath(taskID))
 }
 
@@ -114,4 +131,12 @@ func (s *Store) tasksDir() string {
 
 func (s *Store) taskPath(taskID string) string {
 	return filepath.Join(s.tasksDir(), taskID+".json")
+}
+
+func validateTaskID(taskID string) error {
+	if taskID == "" || filepath.IsAbs(taskID) || strings.ContainsAny(taskID, `/\`) {
+		return fmt.Errorf("%w: %q", ErrInvalidTaskID, taskID)
+	}
+
+	return nil
 }
