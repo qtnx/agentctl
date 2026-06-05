@@ -173,6 +173,92 @@ func TestAttachShellDetachRejectInvalidTaskIDBeforeTmuxCall(t *testing.T) {
 	}
 }
 
+func TestAttachShellDetachRejectMismatchedSavedTaskIDBeforeTmuxCall(t *testing.T) {
+	tests := []struct {
+		name string
+		cmd  func(sessionDeps) *cobra.Command
+	}{
+		{name: "attach", cmd: newAttachCommandWithDeps},
+		{name: "shell", cmd: newShellCommandWithDeps},
+		{name: "detach", cmd: newDetachCommandWithDeps},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fakes := &sessionFakes{
+				cfg: &config.Config{StateDir: "/tmp/agentctl-state"},
+				tasks: map[string]state.Task{
+					"XL-123": {
+						TaskID:      "OTHER-123",
+						TmuxSession: "agentctl-XL-123",
+					},
+				},
+			}
+			cmd := tt.cmd(fakes.deps())
+			cmd.SetOut(io.Discard)
+			cmd.SetErr(io.Discard)
+			cmd.SetArgs([]string{"XL-123"})
+
+			err := cmd.Execute()
+			if err == nil {
+				t.Fatal("error = nil, want task id mismatch error")
+			}
+			if want := `state task id "OTHER-123" does not match requested task id "XL-123"`; !strings.Contains(err.Error(), want) {
+				t.Fatalf("error = %v, want %q", err, want)
+			}
+			if len(fakes.attachCalls) != 0 {
+				t.Fatalf("attach calls = %#v, want none", fakes.attachCalls)
+			}
+			if len(fakes.detachCalls) != 0 {
+				t.Fatalf("detach calls = %#v, want none", fakes.detachCalls)
+			}
+		})
+	}
+}
+
+func TestAttachShellDetachRejectMismatchedTmuxSessionBeforeTmuxCall(t *testing.T) {
+	tests := []struct {
+		name string
+		cmd  func(sessionDeps) *cobra.Command
+	}{
+		{name: "attach", cmd: newAttachCommandWithDeps},
+		{name: "shell", cmd: newShellCommandWithDeps},
+		{name: "detach", cmd: newDetachCommandWithDeps},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fakes := &sessionFakes{
+				cfg: &config.Config{StateDir: "/tmp/agentctl-state"},
+				tasks: map[string]state.Task{
+					"XL-123": {
+						TaskID:      "XL-123",
+						TmuxSession: "agentctl-OTHER-123",
+					},
+				},
+			}
+			cmd := tt.cmd(fakes.deps())
+			cmd.SetOut(io.Discard)
+			cmd.SetErr(io.Discard)
+			cmd.SetArgs([]string{"XL-123"})
+
+			err := cmd.Execute()
+			if err == nil {
+				t.Fatal("error = nil, want tmux session mismatch error")
+			}
+			if want := `state tmux session "agentctl-OTHER-123" does not match expected "agentctl-XL-123"`; !strings.Contains(err.Error(), want) {
+				t.Fatalf("error = %v, want %q", err, want)
+			}
+			if len(fakes.attachCalls) != 0 {
+				t.Fatalf("attach calls = %#v, want none", fakes.attachCalls)
+			}
+			if len(fakes.detachCalls) != 0 {
+				t.Fatalf("detach calls = %#v, want none", fakes.detachCalls)
+			}
+		})
+	}
+}
+
 type sessionFakes struct {
 	cfg             *config.Config
 	loadConfigPaths []string

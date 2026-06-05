@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/spf13/cobra"
 	"github.com/your-org/agentctl/internal/config"
@@ -63,8 +64,8 @@ func newSessionCommandWithDeps(use, short string, deps sessionDeps, tmuxAction f
 		Short: short,
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			taskID := args[0]
-			if err := validateRunTaskID(taskID); err != nil {
+			requestedTaskID := args[0]
+			if err := validateRunTaskID(requestedTaskID); err != nil {
 				return err
 			}
 
@@ -73,15 +74,19 @@ func newSessionCommandWithDeps(use, short string, deps sessionDeps, tmuxAction f
 				return err
 			}
 
-			task, err := deps.loadTask(cfg.StateDir, taskID)
+			task, err := deps.loadTask(cfg.StateDir, requestedTaskID)
 			if err != nil {
 				return err
 			}
-			if task.TaskID != "" {
-				taskID = task.TaskID
+			if task.TaskID != "" && task.TaskID != requestedTaskID {
+				return fmt.Errorf("state task id %q does not match requested task id %q", task.TaskID, requestedTaskID)
+			}
+			expectedSession := tmux.SessionName(requestedTaskID)
+			if task.TmuxSession != expectedSession {
+				return fmt.Errorf("state tmux session %q does not match expected %q", task.TmuxSession, expectedSession)
 			}
 
-			return tmuxAction(cmd.Context(), taskID)
+			return tmuxAction(cmd.Context(), requestedTaskID)
 		},
 	}
 
