@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 )
@@ -11,9 +12,12 @@ const (
 	workspacePath      = "/workspace"
 )
 
+var validTaskIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]*$`)
+
 type DockerOptions struct {
 	TaskID      string
 	Worktree    string
+	GitDir      string
 	GitLabToken string
 	GitLabHost  string
 	RemotePath  string
@@ -22,18 +26,39 @@ type DockerOptions struct {
 	Env         map[string]string
 }
 
+type DockerInvocation struct {
+	Command []string
+	Env     []string
+}
+
 func DockerCommand(opts DockerOptions) ([]string, error) {
-	taskID, err := requiredOption("TaskID", opts.TaskID)
+	invocation, err := DockerInvocationFor(opts)
 	if err != nil {
 		return nil, err
+	}
+
+	return invocation.Command, nil
+}
+
+func DockerInvocationFor(opts DockerOptions) (DockerInvocation, error) {
+	taskID, err := requiredOption("TaskID", opts.TaskID)
+	if err != nil {
+		return DockerInvocation{}, err
+	}
+	if !validTaskIDPattern.MatchString(taskID) {
+		return DockerInvocation{}, fmt.Errorf("TaskID %q contains invalid Docker container name characters", taskID)
 	}
 	worktree, err := requiredOption("Worktree", opts.Worktree)
 	if err != nil {
-		return nil, err
+		return DockerInvocation{}, err
+	}
+	gitDir, err := requiredOption("GitDir", opts.GitDir)
+	if err != nil {
+		return DockerInvocation{}, err
 	}
 	gitLabToken, err := requiredOption("GitLabToken", opts.GitLabToken)
 	if err != nil {
-		return nil, err
+		return DockerInvocation{}, err
 	}
 
 	image := strings.TrimSpace(opts.Image)
@@ -54,25 +79,30 @@ func DockerCommand(opts DockerOptions) ([]string, error) {
 
 	env, err := dockerEnv(opts, gitLabToken, image)
 	if err != nil {
-		return nil, err
+		return DockerInvocation{}, err
 	}
-	for _, key := range sortedKeys(env) {
-		args = append(args, "-e", key+"="+env[key])
+	envKeys := sortedKeys(env)
+	for _, key := range envKeys {
+		args = append(args, "-e", key)
 	}
 
 	args = append(args,
 		"-v", worktree+":"+workspacePath+":rw",
+		"-v", gitDir+":"+gitDir+":rw",
 		"-w", workspacePath,
 		image,
 	)
 
 	command, err := dockerCommandSuffix(opts.Command)
 	if err != nil {
-		return nil, err
+		return DockerInvocation{}, err
 	}
 	args = append(args, command...)
 
-	return args, nil
+	return DockerInvocation{
+		Command: args,
+		Env:     envPairs(env, envKeys),
+	}, nil
 }
 
 func requiredOption(name, value string) (string, error) {
@@ -93,6 +123,9 @@ func dockerEnv(opts DockerOptions, gitLabToken, image string) (map[string]string
 		if strings.Contains(key, "=") {
 			return nil, fmt.Errorf("env key %q must not contain =", key)
 		}
+		if !isAllowedExtraEnv(key) {
+			return nil, fmt.Errorf("env key %q is not allowed", key)
+		}
 		env[key] = value
 	}
 
@@ -112,6 +145,15 @@ func dockerEnv(opts DockerOptions, gitLabToken, image string) (map[string]string
 	return env, nil
 }
 
+func isAllowedExtraEnv(key string) bool {
+	switch key {
+	case "CI", "NO_COLOR", "TERM", "TZ":
+		return true
+	default:
+		return false
+	}
+}
+
 func sortedKeys(values map[string]string) []string {
 	keys := make([]string, 0, len(values))
 	for key := range values {
@@ -121,29 +163,56 @@ func sortedKeys(values map[string]string) []string {
 	return keys
 }
 
+func envPairs(env map[string]string, keys []string) []string {
+	pairs := make([]string, 0, len(keys))
+	for _, key := range keys {
+		pairs = append(pairs, key+"="+env[key])
+	}
+	return pairs
+}
+
 func isNodeImage(image string) bool {
 	return image == defaultDockerImage || strings.HasPrefix(image, "node:")
 }
 
 func dockerCommandSuffix(command []string) ([]string, error) {
 	if len(command) == 0 {
-		return []string{"bash", "-lc", defaultDockerScript()}, nil
+		command = []string{"bash"}
 	}
 
 	if strings.TrimSpace(command[0]) == "" {
 		return nil, fmt.Errorf("Command is required")
 	}
 
-	return append([]string(nil), command...), nil
+	args := []string{"bash", "-lc", defaultDockerScript(), "--"}
+	args = append(args, command...)
+	return args, nil
 }
 
 func defaultDockerScript() string {
 	return strings.Join([]string{
 		"set -euo pipefail",
+		`askpass_path=""`,
+		`cleanup() {`,
+		`  if [ -n "${askpass_path}" ]; then rm -f "${askpass_path}"; fi`,
+		`}`,
+		`trap cleanup EXIT`,
 		`if [ -n "${GITLAB_HOST:-}" ] && [ -n "${GITLAB_REMOTE_PATH:-}" ]; then`,
 		`  remote_path="${GITLAB_REMOTE_PATH%.git}"`,
-		`  git remote set-url origin "https://oauth2:${GITLAB_TOKEN}@${GITLAB_HOST}/${remote_path}.git"`,
+		`  git remote set-url origin "https://${GITLAB_HOST}/${remote_path}.git"`,
+		`  askpass_path="$(mktemp)"`,
+		`  cat > "${askpass_path}" <<'EOF'`,
+		`#!/usr/bin/env sh`,
+		`case "$1" in`,
+		`  *Username*) printf '%s\n' oauth2 ;;`,
+		`  *Password*) printf '%s\n' "$GITLAB_TOKEN" ;;`,
+		`  *) printf '\n' ;;`,
+		`esac`,
+		`EOF`,
+		`  chmod 700 "${askpass_path}"`,
+		`  export GIT_ASKPASS="${askpass_path}"`,
+		`  export GIT_TERMINAL_PROMPT=0`,
 		"fi",
-		"exec bash",
+		`exec "$@"`,
 	}, "\n")
 }

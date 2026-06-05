@@ -6,17 +6,12 @@ import (
 	"testing"
 )
 
-func TestDockerCommandBuildsUntrustedRunCommand(t *testing.T) {
-	args, err := DockerCommand(DockerOptions{
-		TaskID:      "XL-123",
-		Worktree:    "/tmp/worktree",
-		GitLabToken: "glpat-secret",
-		GitLabHost:  "gitlab.example.com",
-		RemotePath:  "team/project",
-	})
+func TestDockerCommandBuildsUntrustedRunCommandWithoutLeakingToken(t *testing.T) {
+	invocation, err := DockerInvocationFor(validDockerOptions())
 	if err != nil {
 		t.Fatal(err)
 	}
+	args := invocation.Command
 
 	if len(args) < 2 || args[0] != "docker" || args[1] != "run" {
 		t.Fatalf("command starts with %#v, want docker run", args[:min(len(args), 2)])
@@ -37,8 +32,9 @@ func TestDockerCommandBuildsUntrustedRunCommand(t *testing.T) {
 	for _, want := range [][]string{
 		{"--name", "agent-XL-123"},
 		{"--security-opt", "no-new-privileges"},
-		{"-e", "GITLAB_TOKEN=glpat-secret"},
+		{"-e", "GITLAB_TOKEN"},
 		{"-v", "/tmp/worktree:/workspace:rw"},
+		{"-v", "/tmp/repo/.git:/tmp/repo/.git:rw"},
 		{"-w", "/workspace"},
 	} {
 		if !containsSequence(args, want) {
@@ -46,73 +42,92 @@ func TestDockerCommandBuildsUntrustedRunCommand(t *testing.T) {
 		}
 	}
 
+	if containsArg(args, "GITLAB_TOKEN=glpat-secret") {
+		t.Fatalf("command = %#v, must pass GITLAB_TOKEN by name only", args)
+	}
+	if countContaining(args, "glpat-secret") != 0 {
+		t.Fatalf("command = %#v, must not include literal token", args)
+	}
+	if !containsArg(invocation.Env, "GITLAB_TOKEN=glpat-secret") {
+		t.Fatalf("env = %#v, want sidecar token env", invocation.Env)
+	}
+
 	imageIndex := indexOf(args, "node:22-bookworm")
 	if imageIndex == -1 {
 		t.Fatalf("command = %#v, want default node image", args)
 	}
 	commandSuffix := args[imageIndex+1:]
-	if len(commandSuffix) != 3 || commandSuffix[0] != "bash" || commandSuffix[1] != "-lc" {
-		t.Fatalf("command suffix = %#v, want bash -lc script", commandSuffix)
+	if len(commandSuffix) < 5 || commandSuffix[0] != "bash" || commandSuffix[1] != "-lc" {
+		t.Fatalf("command suffix = %#v, want bash -lc setup -- command", commandSuffix)
+	}
+	if commandSuffix[3] != "--" || commandSuffix[4] != "bash" {
+		t.Fatalf("command suffix = %#v, want default command after --", commandSuffix)
 	}
 
 	script := commandSuffix[2]
 	for _, want := range []string{
 		"git remote set-url origin",
-		"GITLAB_HOST",
-		"GITLAB_REMOTE_PATH",
-		"GITLAB_TOKEN",
-		"exec bash",
+		`https://${GITLAB_HOST}/${remote_path}.git`,
+		"GIT_ASKPASS",
+		"GIT_TERMINAL_PROMPT",
+		`exec "$@"`,
 	} {
 		if !strings.Contains(script, want) {
 			t.Fatalf("script = %q, want %q", script, want)
 		}
 	}
-	if strings.Contains(script, "glpat-secret") {
-		t.Fatalf("script leaked token: %q", script)
-	}
-	if countContaining(args, "glpat-secret") != 1 {
-		t.Fatalf("command = %#v, want token only in GITLAB_TOKEN env", args)
+	for _, banned := range []string{
+		`oauth2:${GITLAB_TOKEN}@`,
+		"glpat-secret",
+	} {
+		if strings.Contains(script, banned) {
+			t.Fatalf("script = %q, must not contain %q", script, banned)
+		}
 	}
 }
 
 func TestDockerCommandRejectsMissingRequiredOptions(t *testing.T) {
 	tests := []struct {
-		name string
-		opts DockerOptions
-		want string
+		name   string
+		update func(*DockerOptions)
+		want   string
 	}{
 		{
 			name: "task id",
-			opts: DockerOptions{
-				TaskID:      " ",
-				Worktree:    "/tmp/worktree",
-				GitLabToken: "glpat-secret",
+			update: func(opts *DockerOptions) {
+				opts.TaskID = " "
 			},
 			want: "TaskID",
 		},
 		{
 			name: "worktree",
-			opts: DockerOptions{
-				TaskID:      "XL-123",
-				Worktree:    "",
-				GitLabToken: "glpat-secret",
+			update: func(opts *DockerOptions) {
+				opts.Worktree = ""
 			},
 			want: "Worktree",
 		},
 		{
 			name: "gitlab token",
-			opts: DockerOptions{
-				TaskID:      "XL-123",
-				Worktree:    "/tmp/worktree",
-				GitLabToken: "\t",
+			update: func(opts *DockerOptions) {
+				opts.GitLabToken = "\t"
 			},
 			want: "GitLabToken",
+		},
+		{
+			name: "git dir",
+			update: func(opts *DockerOptions) {
+				opts.GitDir = ""
+			},
+			want: "GitDir",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := DockerCommand(tt.opts)
+			opts := validDockerOptions()
+			tt.update(&opts)
+
+			_, err := DockerCommand(opts)
 			if err == nil {
 				t.Fatal("expected error")
 			}
@@ -123,47 +138,103 @@ func TestDockerCommandRejectsMissingRequiredOptions(t *testing.T) {
 	}
 }
 
-func TestDockerCommandOrdersExtraEnvVarsDeterministically(t *testing.T) {
-	args, err := DockerCommand(DockerOptions{
-		TaskID:      "XL-123",
-		Worktree:    "/tmp/worktree",
-		GitLabToken: "glpat-secret",
-		Env: map[string]string{
-			"ZZZ": "last",
-			"AAA": "first",
-			"MMM": "middle",
-		},
-	})
+func TestDockerCommandValidatesTaskIDForContainerName(t *testing.T) {
+	for _, taskID := range []string{"XL-123", "abc_123", "abc.123"} {
+		t.Run("valid "+taskID, func(t *testing.T) {
+			opts := validDockerOptions()
+			opts.TaskID = taskID
+
+			args, err := DockerCommand(opts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !containsSequence(args, []string{"--name", "agent-" + taskID}) {
+				t.Fatalf("command = %#v, want container name for %q", args, taskID)
+			}
+		})
+	}
+
+	for _, taskID := range []string{"bad id", "bad/id", "bad:id", ""} {
+		t.Run("invalid "+taskID, func(t *testing.T) {
+			opts := validDockerOptions()
+			opts.TaskID = taskID
+
+			_, err := DockerCommand(opts)
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			if !strings.Contains(err.Error(), "TaskID") {
+				t.Fatalf("error = %v, want TaskID validation", err)
+			}
+		})
+	}
+}
+
+func TestDockerInvocationOrdersAllowedEnvVarsDeterministically(t *testing.T) {
+	opts := validDockerOptions()
+	opts.Env = map[string]string{
+		"TERM":     "xterm-256color",
+		"CI":       "true",
+		"NO_COLOR": "1",
+	}
+
+	invocation, err := DockerInvocationFor(opts)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	var got []string
-	for _, value := range envValues(args) {
+	var gotEnv []string
+	for _, value := range invocation.Env {
 		switch {
-		case strings.HasPrefix(value, "AAA="):
-			got = append(got, value)
-		case strings.HasPrefix(value, "MMM="):
-			got = append(got, value)
-		case strings.HasPrefix(value, "ZZZ="):
-			got = append(got, value)
+		case strings.HasPrefix(value, "CI="):
+			gotEnv = append(gotEnv, value)
+		case strings.HasPrefix(value, "NO_COLOR="):
+			gotEnv = append(gotEnv, value)
+		case strings.HasPrefix(value, "TERM="):
+			gotEnv = append(gotEnv, value)
 		}
 	}
 
-	want := []string{"AAA=first", "MMM=middle", "ZZZ=last"}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("extra env order = %#v, want %#v", got, want)
+	wantEnv := []string{"CI=true", "NO_COLOR=1", "TERM=xterm-256color"}
+	if !reflect.DeepEqual(gotEnv, wantEnv) {
+		t.Fatalf("extra env order = %#v, want %#v", gotEnv, wantEnv)
+	}
+
+	var gotFlags []string
+	for _, value := range envValues(invocation.Command) {
+		switch value {
+		case "CI", "NO_COLOR", "TERM":
+			gotFlags = append(gotFlags, value)
+		}
+	}
+
+	wantFlags := []string{"CI", "NO_COLOR", "TERM"}
+	if !reflect.DeepEqual(gotFlags, wantFlags) {
+		t.Fatalf("extra env flag order = %#v, want %#v", gotFlags, wantFlags)
 	}
 }
 
-func TestDockerCommandAppendsCustomCommandAsArgv(t *testing.T) {
-	args, err := DockerCommand(DockerOptions{
-		TaskID:      "XL-123",
-		Worktree:    "/tmp/worktree",
-		GitLabToken: "glpat-secret",
-		Image:       "golang:1.22-bookworm",
-		Command:     []string{"go", "test", "./..."},
-	})
+func TestDockerInvocationRejectsDisallowedEnvVars(t *testing.T) {
+	opts := validDockerOptions()
+	opts.Env = map[string]string{
+		"AWS_SECRET_ACCESS_KEY": "secret",
+	}
+
+	_, err := DockerInvocationFor(opts)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "AWS_SECRET_ACCESS_KEY") {
+		t.Fatalf("error = %v, want disallowed env key", err)
+	}
+}
+
+func TestDockerCommandRunsSetupBeforeCustomCommand(t *testing.T) {
+	opts := validDockerOptions()
+	opts.Image = "golang:1.22-bookworm"
+	opts.Command = []string{"go", "test", "./..."}
+
+	args, err := DockerCommand(opts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -174,9 +245,30 @@ func TestDockerCommandAppendsCustomCommandAsArgv(t *testing.T) {
 	}
 
 	got := args[imageIndex+1:]
+	if len(got) < 7 || got[0] != "bash" || got[1] != "-lc" {
+		t.Fatalf("command suffix = %#v, want bash -lc setup -- custom command", got)
+	}
+	if !strings.Contains(got[2], "git remote set-url origin") || !strings.Contains(got[2], `exec "$@"`) {
+		t.Fatalf("setup script = %q, want git setup and exec argv", got[2])
+	}
+	if got[3] != "--" {
+		t.Fatalf("command suffix = %#v, want -- before custom command", got)
+	}
+
 	want := []string{"go", "test", "./..."}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("command suffix = %#v, want %#v", got, want)
+	if !reflect.DeepEqual(got[4:], want) {
+		t.Fatalf("custom command = %#v, want %#v", got[4:], want)
+	}
+}
+
+func validDockerOptions() DockerOptions {
+	return DockerOptions{
+		TaskID:      "XL-123",
+		Worktree:    "/tmp/worktree",
+		GitDir:      "/tmp/repo/.git",
+		GitLabToken: "glpat-secret",
+		GitLabHost:  "gitlab.example.com",
+		RemotePath:  "team/project",
 	}
 }
 
