@@ -20,7 +20,6 @@ type DockerOptions struct {
 	GitDir      string
 	GitLabToken string
 	GitLabHost  string
-	RemotePath  string
 	Image       string
 	Command     []string
 	Env         map[string]string
@@ -51,6 +50,10 @@ func DockerInvocationFor(opts DockerOptions) (DockerInvocation, error) {
 	if err != nil {
 		return DockerInvocation{}, err
 	}
+	gitLabHost, err := requiredOption("GitLabHost", opts.GitLabHost)
+	if err != nil {
+		return DockerInvocation{}, err
+	}
 
 	image := strings.TrimSpace(opts.Image)
 	if image == "" {
@@ -71,7 +74,7 @@ func DockerInvocationFor(opts DockerOptions) (DockerInvocation, error) {
 		"--cpus=4",
 	}
 
-	env, err := dockerEnv(opts, gitLabToken, image)
+	env, err := dockerEnv(opts, gitLabToken, gitLabHost, image)
 	if err != nil {
 		return DockerInvocation{}, err
 	}
@@ -107,7 +110,7 @@ func requiredOption(name, value string) (string, error) {
 	return value, nil
 }
 
-func dockerEnv(opts DockerOptions, gitLabToken, image string) (map[string]string, error) {
+func dockerEnv(opts DockerOptions, gitLabToken, gitLabHost, image string) (map[string]string, error) {
 	env := map[string]string{}
 	for key, value := range opts.Env {
 		key = strings.TrimSpace(key)
@@ -124,13 +127,7 @@ func dockerEnv(opts DockerOptions, gitLabToken, image string) (map[string]string
 	}
 
 	env["GITLAB_TOKEN"] = gitLabToken
-
-	gitLabHost := strings.TrimSpace(opts.GitLabHost)
-	remotePath := strings.TrimSpace(opts.RemotePath)
-	if gitLabHost != "" && remotePath != "" {
-		env["GITLAB_HOST"] = gitLabHost
-		env["GITLAB_REMOTE_PATH"] = remotePath
-	}
+	env["GITLAB_HOST"] = gitLabHost
 
 	if isNodeImage(image) {
 		env["NPM_CONFIG_IGNORE_SCRIPTS"] = "true"
@@ -191,7 +188,7 @@ func defaultDockerScript() string {
 		`  if [ -n "${askpass_path}" ]; then rm -f "${askpass_path}"; fi`,
 		`}`,
 		`trap cleanup EXIT`,
-		`if [ -n "${GITLAB_HOST:-}" ] && [ -n "${GITLAB_REMOTE_PATH:-}" ]; then`,
+		`if [ -n "${GITLAB_HOST:-}" ]; then`,
 		`  export GIT_CONFIG_COUNT=2`,
 		`  export GIT_CONFIG_KEY_0="url.https://${GITLAB_HOST}/.insteadOf"`,
 		`  export GIT_CONFIG_VALUE_0="git@${GITLAB_HOST}:"`,

@@ -122,6 +122,13 @@ func TestDockerInvocationRejectsMissingRequiredOptions(t *testing.T) {
 			},
 			want: "GitDir",
 		},
+		{
+			name: "gitlab host",
+			update: func(opts *DockerOptions) {
+				opts.GitLabHost = " "
+			},
+			want: "GitLabHost",
+		},
 	}
 
 	for _, tt := range tests {
@@ -170,6 +177,41 @@ func TestDockerInvocationValidatesTaskIDForContainerName(t *testing.T) {
 				t.Fatalf("error = %v, want TaskID validation", err)
 			}
 		})
+	}
+}
+
+func TestDockerInvocationUsesGitLabHostWithoutRemotePath(t *testing.T) {
+	invocation, err := DockerInvocationFor(validDockerOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !containsSequence(invocation.Command, []string{"-e", "GITLAB_HOST"}) {
+		t.Fatalf("command = %#v, want GITLAB_HOST env flag", invocation.Command)
+	}
+	if !containsArg(invocation.Env, "GITLAB_HOST=gitlab.example.com") {
+		t.Fatalf("env = %#v, want GITLAB_HOST sidecar env", invocation.Env)
+	}
+	if countContaining(invocation.Command, "GITLAB_REMOTE_PATH") != 0 {
+		t.Fatalf("command = %#v, must not depend on GITLAB_REMOTE_PATH", invocation.Command)
+	}
+	if countContaining(invocation.Env, "GITLAB_REMOTE_PATH") != 0 {
+		t.Fatalf("env = %#v, must not include GITLAB_REMOTE_PATH", invocation.Env)
+	}
+
+	script := setupScript(t, invocation.Command, "node:22-bookworm")
+	for _, want := range []string{
+		`if [ -n "${GITLAB_HOST:-}" ]; then`,
+		"GIT_CONFIG_COUNT",
+		`url.https://${GITLAB_HOST}/.insteadOf`,
+		"GIT_ASKPASS",
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("script = %q, want %q", script, want)
+		}
+	}
+	if strings.Contains(script, "GITLAB_REMOTE_PATH") {
+		t.Fatalf("script = %q, must not depend on GITLAB_REMOTE_PATH", script)
 	}
 }
 
@@ -292,8 +334,21 @@ func validDockerOptions() DockerOptions {
 		GitDir:      "/tmp/repo/.git",
 		GitLabToken: "glpat-secret",
 		GitLabHost:  "gitlab.example.com",
-		RemotePath:  "team/project",
 	}
+}
+
+func setupScript(t *testing.T, args []string, image string) string {
+	t.Helper()
+
+	imageIndex := indexOf(args, image)
+	if imageIndex == -1 {
+		t.Fatalf("command = %#v, want image %q", args, image)
+	}
+	commandSuffix := args[imageIndex+1:]
+	if len(commandSuffix) < 3 {
+		t.Fatalf("command suffix = %#v, want setup script", commandSuffix)
+	}
+	return commandSuffix[2]
 }
 
 func containsArg(args []string, want string) bool {
