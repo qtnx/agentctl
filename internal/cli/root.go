@@ -23,24 +23,8 @@ func NewRootCommand() *cobra.Command {
 	return cmd
 }
 
-func newShellCommand() *cobra.Command {
-	return &cobra.Command{Use: "shell TASK_ID", Short: "Open a shell in an agent session"}
-}
-
-func newAttachCommand() *cobra.Command {
-	return &cobra.Command{Use: "attach TASK_ID", Short: "Attach to an agent tmux session"}
-}
-
-func newDetachCommand() *cobra.Command {
-	return &cobra.Command{Use: "detach TASK_ID", Short: "Detach from an agent tmux session"}
-}
-
 func newCleanupCommand() *cobra.Command {
 	return &cobra.Command{Use: "cleanup TASK_ID", Short: "Clean up an agent workspace"}
-}
-
-func newListCommand() *cobra.Command {
-	return &cobra.Command{Use: "list", Short: "List agent workspaces"}
 }
 
 func newTokenBrokerCommand() *cobra.Command {
