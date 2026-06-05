@@ -1,0 +1,18 @@
+base_dir: ~/agent-workspaces
+state_dir: ~/.local/state/agentctl
+gitlab:
+  host: gitlab.example.com
+repos:
+  backend:
+    path: ~/code/example-group/backend
+    project_id: "12345678"
+    default_branch: main
+    remote: git@gitlab.example.com:example-group/backend.git
+remotes:
+  buildbox-1:
+    host: buildbox-1.example.com
+    user: agent
+    agentctl_path: /usr/local/bin/agentctl
+    config_path: /etc/agentctl/config.yaml
+templates:
+  default: node
