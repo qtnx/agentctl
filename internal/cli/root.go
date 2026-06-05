@@ -23,10 +23,6 @@ func NewRootCommand() *cobra.Command {
 	return cmd
 }
 
-func newRunCommand() *cobra.Command {
-	return &cobra.Command{Use: "run TASK_ID", Short: "Start an agent workspace"}
-}
-
 func newShellCommand() *cobra.Command {
 	return &cobra.Command{Use: "shell TASK_ID", Short: "Open a shell in an agent session"}
 }
