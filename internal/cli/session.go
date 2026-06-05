@@ -83,7 +83,8 @@ func newSessionCommandWithDeps(use, short, remoteCommand string, remoteInteracti
 				if err != nil {
 					return err
 				}
-				return deps.forwardRemote(cmd.Context(), target, remoteInteractive, remoteCommand, requestedTaskID, "--config", configPath)
+				args := appendRemoteConfigArgs([]string{remoteCommand, requestedTaskID}, remoteConfigPathFromConfig(cfg, remoteName))
+				return deps.forwardRemote(cmd.Context(), target, remoteInteractive, args...)
 			}
 
 			cfg, err := deps.loadConfig(configPath)

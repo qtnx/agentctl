@@ -211,7 +211,58 @@ func TestRemoteCleanupForwardsNonInteractiveSSHWithoutLocalCleanup(t *testing.T)
 			AgentctlPath: "/usr/local/bin/agentctl",
 		},
 		interactive: false,
-		args:        []string{"cleanup", "XL-123", "--config", configPath},
+		args:        []string{"cleanup", "XL-123"},
+	}
+	if !reflect.DeepEqual(fakes.remoteCalls, []cleanupRemoteCall{wantCall}) {
+		t.Fatalf("remote calls = %#v, want %#v", fakes.remoteCalls, []cleanupRemoteCall{wantCall})
+	}
+	assertNoForwardedRemoteFlag(t, fakes.remoteCalls[0].args)
+	if len(fakes.loadTaskCalls) != 0 {
+		t.Fatalf("load task calls = %#v, want none", fakes.loadTaskCalls)
+	}
+	if len(fakes.cleanupCalls) != 0 {
+		t.Fatalf("cleanup calls = %#v, want none", fakes.cleanupCalls)
+	}
+}
+
+func TestRemoteCleanupForwardsConfiguredRemoteConfigPath(t *testing.T) {
+	tmp := t.TempDir()
+	cfg := testCleanupConfig(tmp)
+	localConfigPath := filepath.Join(tmp, "local-config.yaml")
+	cfg.Remotes = map[string]config.Remote{
+		"buildbox-1": {
+			Host:         "buildbox-1.example.com",
+			User:         "deploy",
+			AgentctlPath: "/usr/local/bin/agentctl",
+			ConfigPath:   "/etc/agentctl/config.yaml",
+		},
+	}
+	fakes := &cleanupCLIFakes{
+		cfg:  cfg,
+		task: cleanupCLITestTask(),
+		env:  map[string]string{"GITLAB_CONTROL_PAT": "control-pat"},
+	}
+
+	cmd := newCleanupCommandWithDeps(fakes.deps())
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"XL-123", "--remote", "buildbox-1", "--config", localConfigPath})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	if !reflect.DeepEqual(fakes.loadConfigPaths, []string{localConfigPath}) {
+		t.Fatalf("config paths = %#v, want local config load", fakes.loadConfigPaths)
+	}
+	wantCall := cleanupRemoteCall{
+		target: remote.Target{
+			Host:         "buildbox-1.example.com",
+			User:         "deploy",
+			AgentctlPath: "/usr/local/bin/agentctl",
+		},
+		interactive: false,
+		args:        []string{"cleanup", "XL-123", "--config", "/etc/agentctl/config.yaml"},
 	}
 	if !reflect.DeepEqual(fakes.remoteCalls, []cleanupRemoteCall{wantCall}) {
 		t.Fatalf("remote calls = %#v, want %#v", fakes.remoteCalls, []cleanupRemoteCall{wantCall})

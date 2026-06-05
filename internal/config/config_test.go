@@ -19,6 +19,12 @@ repos:
     project_id: "123"
     default_branch: main
     remote: git@gitlab.example.com:team/backend.git
+remotes:
+  buildbox-1:
+    host: buildbox-1.example.com
+    user: deploy
+    agentctl_path: /usr/local/bin/agentctl
+    config_path: /etc/agentctl/config.yaml
 `), 0600)
 	if err != nil {
 		t.Fatal(err)
@@ -44,6 +50,19 @@ repos:
 	wantRepoPath := filepath.Join(home, "code/backend")
 	if cfg.Repos["backend"].Path != wantRepoPath {
 		t.Fatalf("repo path = %q, want %q", cfg.Repos["backend"].Path, wantRepoPath)
+	}
+	remote := cfg.Remotes["buildbox-1"]
+	if remote.Host != "buildbox-1.example.com" {
+		t.Fatalf("remote host = %q", remote.Host)
+	}
+	if remote.User != "deploy" {
+		t.Fatalf("remote user = %q", remote.User)
+	}
+	if remote.AgentctlPath != "/usr/local/bin/agentctl" {
+		t.Fatalf("remote agentctl path = %q", remote.AgentctlPath)
+	}
+	if remote.ConfigPath != "/etc/agentctl/config.yaml" {
+		t.Fatalf("remote config path = %q", remote.ConfigPath)
 	}
 
 	wantStateDir := filepath.Join(home, ".local/state/agentctl")

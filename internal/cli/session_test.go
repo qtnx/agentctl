@@ -292,7 +292,7 @@ func TestRemoteAttachForwardsInteractiveSSHWithoutLoadingLocalState(t *testing.T
 			AgentctlPath: "/usr/local/bin/agentctl",
 		},
 		interactive: true,
-		args:        []string{"attach", "XL-123", "--config", "/tmp/config.yaml"},
+		args:        []string{"attach", "XL-123"},
 	}
 	if !reflect.DeepEqual(fakes.remoteCalls, []sessionRemoteCall{wantCall}) {
 		t.Fatalf("remote calls = %#v, want %#v", fakes.remoteCalls, []sessionRemoteCall{wantCall})
@@ -338,7 +338,7 @@ func TestRemoteShellForwardsInteractiveSSH(t *testing.T) {
 			AgentctlPath: "/usr/local/bin/agentctl",
 		},
 		interactive: true,
-		args:        []string{"shell", "XL-123", "--config", "/tmp/config.yaml"},
+		args:        []string{"shell", "XL-123"},
 	}
 	if !reflect.DeepEqual(fakes.remoteCalls, []sessionRemoteCall{wantCall}) {
 		t.Fatalf("remote calls = %#v, want %#v", fakes.remoteCalls, []sessionRemoteCall{wantCall})
@@ -378,7 +378,7 @@ func TestRemoteDetachForwardsNonInteractiveSSH(t *testing.T) {
 			AgentctlPath: "/usr/local/bin/agentctl",
 		},
 		interactive: false,
-		args:        []string{"detach", "XL-123", "--config", "/tmp/config.yaml"},
+		args:        []string{"detach", "XL-123"},
 	}
 	if !reflect.DeepEqual(fakes.remoteCalls, []sessionRemoteCall{wantCall}) {
 		t.Fatalf("remote calls = %#v, want %#v", fakes.remoteCalls, []sessionRemoteCall{wantCall})
@@ -410,6 +410,47 @@ func TestRemoteAttachMissingRemoteErrorsWithoutLoadingLocalState(t *testing.T) {
 	}
 	if len(fakes.remoteCalls) != 0 {
 		t.Fatalf("remote calls = %#v, want none", fakes.remoteCalls)
+	}
+}
+
+func TestRemoteAttachForwardsConfiguredRemoteConfigPath(t *testing.T) {
+	cfg := &config.Config{
+		StateDir: "/tmp/agentctl-state",
+		Remotes: map[string]config.Remote{
+			"buildbox-1": {
+				Host:         "buildbox-1.example.com",
+				User:         "deploy",
+				AgentctlPath: "/usr/local/bin/agentctl",
+				ConfigPath:   "/etc/agentctl/config.yaml",
+			},
+		},
+	}
+	fakes := &sessionFakes{cfg: cfg}
+
+	cmd := newAttachCommandWithDeps(fakes.deps())
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"XL-123", "--remote", "buildbox-1", "--config", "/tmp/local-config.yaml"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	wantCall := sessionRemoteCall{
+		target: remote.Target{
+			Host:         "buildbox-1.example.com",
+			User:         "deploy",
+			AgentctlPath: "/usr/local/bin/agentctl",
+		},
+		interactive: true,
+		args:        []string{"attach", "XL-123", "--config", "/etc/agentctl/config.yaml"},
+	}
+	if !reflect.DeepEqual(fakes.remoteCalls, []sessionRemoteCall{wantCall}) {
+		t.Fatalf("remote calls = %#v, want %#v", fakes.remoteCalls, []sessionRemoteCall{wantCall})
+	}
+	assertNoForwardedRemoteFlag(t, fakes.remoteCalls[0].args)
+	if len(fakes.loadTaskCalls) != 0 {
+		t.Fatalf("load task calls = %#v, want none", fakes.loadTaskCalls)
 	}
 }
 

@@ -32,6 +32,7 @@ type Remote struct {
 	Host         string `yaml:"host"`
 	User         string `yaml:"user"`
 	AgentctlPath string `yaml:"agentctl_path"`
+	ConfigPath   string `yaml:"config_path"`
 }
 
 type TemplatesConfig struct {

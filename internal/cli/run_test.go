@@ -681,8 +681,64 @@ func TestRemoteRunForwardsResolvedConfigWithoutLocalServices(t *testing.T) {
 			"untrusted",
 			"--template",
 			"golang",
+		},
+	}
+	if !reflect.DeepEqual(fakes.remoteCalls, []runRemoteCall{wantCall}) {
+		t.Fatalf("remote calls = %#v, want %#v", fakes.remoteCalls, []runRemoteCall{wantCall})
+	}
+	assertNoForwardedRemoteFlag(t, fakes.remoteCalls[0].args)
+	assertNoRunSideEffects(t, fakes)
+}
+
+func TestRemoteRunForwardsConfiguredRemoteConfigPath(t *testing.T) {
+	tmp := t.TempDir()
+	cfg := testRunConfig(tmp)
+	localConfigPath := filepath.Join(tmp, "local-config.yaml")
+	cfg.Remotes = map[string]config.Remote{
+		"buildbox-1": {
+			Host:         "buildbox-1.example.com",
+			User:         "deploy",
+			AgentctlPath: "/usr/local/bin/agentctl",
+			ConfigPath:   "/etc/agentctl/config.yaml",
+		},
+	}
+	fakes := newRunFakes(cfg, time.Date(2026, 6, 5, 12, 34, 56, 0, time.UTC))
+
+	cmd := newRunCommandWithDeps(fakes.deps())
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{
+		"XL-123",
+		"--repo", "backend",
+		"--remote", "buildbox-1",
+		"--config", localConfigPath,
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	if !reflect.DeepEqual(fakes.loadConfigPaths, []string{localConfigPath}) {
+		t.Fatalf("config paths = %#v, want local config load", fakes.loadConfigPaths)
+	}
+	wantCall := runRemoteCall{
+		target: remote.Target{
+			Host:         "buildbox-1.example.com",
+			User:         "deploy",
+			AgentctlPath: "/usr/local/bin/agentctl",
+		},
+		interactive: false,
+		args: []string{
+			"run",
+			"XL-123",
+			"--repo",
+			"backend",
+			"--agent",
+			"codex",
+			"--risk",
+			"untrusted",
 			"--config",
-			configPath,
+			"/etc/agentctl/config.yaml",
 		},
 	}
 	if !reflect.DeepEqual(fakes.remoteCalls, []runRemoteCall{wantCall}) {

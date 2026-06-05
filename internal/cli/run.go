@@ -265,9 +265,7 @@ func runRemote(ctx context.Context, deps runDeps, opts runOptions) error {
 	if opts.templateName != "" {
 		args = append(args, "--template", opts.templateName)
 	}
-	if opts.configPath != "" {
-		args = append(args, "--config", opts.configPath)
-	}
+	args = appendRemoteConfigArgs(args, remoteConfigPathFromConfig(cfg, opts.remoteName))
 
 	return deps.forwardRemote(ctx, target, false, args...)
 }
@@ -284,10 +282,22 @@ func remoteTargetFromConfig(cfg *config.Config, remoteName string) (remote.Targe
 	}
 
 	return remote.Target{
-		Host:         host,
-		User:         strings.TrimSpace(remoteConfig.User),
-		AgentctlPath: strings.TrimSpace(remoteConfig.AgentctlPath),
+		Host:         remoteConfig.Host,
+		User:         remoteConfig.User,
+		AgentctlPath: remoteConfig.AgentctlPath,
 	}, nil
+}
+
+func remoteConfigPathFromConfig(cfg *config.Config, remoteName string) string {
+	return strings.TrimSpace(cfg.Remotes[remoteName].ConfigPath)
+}
+
+func appendRemoteConfigArgs(args []string, configPath string) []string {
+	if configPath == "" {
+		return args
+	}
+
+	return append(args, "--config", configPath)
 }
 
 func runRuntimeFor(cfg *config.Config, opts runOptions) (runRuntimeSelection, error) {

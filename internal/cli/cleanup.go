@@ -93,7 +93,8 @@ func cleanupTask(ctx context.Context, deps cleanupDeps, taskID, configPath, remo
 		if err != nil {
 			return err
 		}
-		return deps.forwardRemote(ctx, target, false, "cleanup", taskID, "--config", configPath)
+		args := appendRemoteConfigArgs([]string{"cleanup", taskID}, remoteConfigPathFromConfig(cfg, remoteName))
+		return deps.forwardRemote(ctx, target, false, args...)
 	}
 
 	task, err := deps.loadTask(cfg.StateDir, taskID)
