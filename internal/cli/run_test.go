@@ -79,14 +79,23 @@ func TestRunStartsLocalAgentWorkspace(t *testing.T) {
 		t.Fatalf("token name = %q, want agent task prefix", tokenClient.createCalls[0].name)
 	}
 
-	if !reflect.DeepEqual(fakes.dockerOptions, []runtime.DockerOptions{{
-		TaskID:      "XL-123",
-		Worktree:    wantWorktree,
-		GitDir:      wantGitDir,
-		GitLabToken: tokenValue,
-		GitLabHost:  "gitlab.example.com",
-	}}) {
-		t.Fatalf("docker options = %#v", fakes.dockerOptions)
+	if len(fakes.dockerOptions) != 1 {
+		t.Fatalf("docker options = %#v, want one call", fakes.dockerOptions)
+	}
+	dockerOpts := fakes.dockerOptions[0]
+	if dockerOpts.TaskID != "XL-123" ||
+		dockerOpts.Worktree != wantWorktree ||
+		dockerOpts.GitDir != wantGitDir ||
+		dockerOpts.GitLabToken != tokenValue ||
+		dockerOpts.GitLabHost != "gitlab.example.com" {
+		t.Fatalf("docker options = %#v", dockerOpts)
+	}
+	if dockerOpts.Image != "node:22-bookworm" {
+		t.Fatalf("docker image = %q, want node default", dockerOpts.Image)
+	}
+	assertRunCommandContains(t, dockerOpts.Command, "command -v codex", "exec codex")
+	if strings.Contains(strings.Join(dockerOpts.Command, "\x00"), tokenValue) {
+		t.Fatalf("docker command contains token value: %#v", dockerOpts.Command)
 	}
 
 	if len(fakes.tmuxStarts) != 1 {
@@ -184,6 +193,120 @@ func TestRunStartsLocalAgentWorkspace(t *testing.T) {
 	if strings.Contains(string(stateJSON), tokenValue) {
 		t.Fatalf("saved state contains token value: %s", stateJSON)
 	}
+}
+
+func TestRunTemplateNodeAgentCodexSelectsDockerImageAndCommand(t *testing.T) {
+	tmp := t.TempDir()
+	cfg := testRunConfig(tmp)
+	fakes := newRunFakes(cfg, time.Date(2026, 6, 5, 12, 34, 56, 0, time.UTC))
+	fakes.env["GITLAB_CONTROL_PAT"] = "control-pat"
+
+	cmd := newRunCommandWithDeps(fakes.deps())
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"XL-123", "--repo", "backend", "--template", "node", "--agent", "codex"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	opts := singleDockerOptions(t, fakes)
+	if opts.Image != "node:22-bookworm" {
+		t.Fatalf("docker image = %q, want node image", opts.Image)
+	}
+	assertRunCommandContains(t, opts.Command, "node --version", "command -v codex", "exec codex")
+}
+
+func TestRunTemplateGolangAgentShellSelectsDockerImageAndCommand(t *testing.T) {
+	tmp := t.TempDir()
+	cfg := testRunConfig(tmp)
+	fakes := newRunFakes(cfg, time.Date(2026, 6, 5, 12, 34, 56, 0, time.UTC))
+	fakes.env["GITLAB_CONTROL_PAT"] = "control-pat"
+
+	cmd := newRunCommandWithDeps(fakes.deps())
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"XL-123", "--repo", "backend", "--template", "golang", "--agent", "shell"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	opts := singleDockerOptions(t, fakes)
+	if opts.Image != "golang:1.22-bookworm" {
+		t.Fatalf("docker image = %q, want golang image", opts.Image)
+	}
+	assertRunCommandContains(t, opts.Command, "go version", "exec bash")
+}
+
+func TestRunEmptyTemplateUsesConfigDefault(t *testing.T) {
+	tmp := t.TempDir()
+	cfg := testRunConfig(tmp)
+	cfg.Templates.Default = "python"
+	fakes := newRunFakes(cfg, time.Date(2026, 6, 5, 12, 34, 56, 0, time.UTC))
+	fakes.env["GITLAB_CONTROL_PAT"] = "control-pat"
+
+	cmd := newRunCommandWithDeps(fakes.deps())
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"XL-123", "--repo", "backend"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	opts := singleDockerOptions(t, fakes)
+	if opts.Image != "python:3.12-bookworm" {
+		t.Fatalf("docker image = %q, want config default python image", opts.Image)
+	}
+	assertRunCommandContains(t, opts.Command, "python --version")
+}
+
+func TestRunUnsupportedTemplateErrorsBeforeSideEffects(t *testing.T) {
+	tmp := t.TempDir()
+	cfg := testRunConfig(tmp)
+	fakes := newRunFakes(cfg, time.Date(2026, 6, 5, 12, 34, 56, 0, time.UTC))
+	fakes.env["GITLAB_CONTROL_PAT"] = "control-pat"
+
+	cmd := newRunCommandWithDeps(fakes.deps())
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"XL-123", "--repo", "backend", "--template", "ruby"})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("error = nil, want unsupported template")
+	}
+	if !strings.Contains(err.Error(), `unsupported template "ruby"`) {
+		t.Fatalf("error = %v, want unsupported template message", err)
+	}
+	assertNoRunSideEffects(t, fakes)
+
+	envPath := filepath.Join(cfg.StateDir, "env", "XL-123.env")
+	if _, err := os.Stat(envPath); !os.IsNotExist(err) {
+		t.Fatalf("env file stat = %v, want not exists", err)
+	}
+}
+
+func TestRunUnsupportedAgentErrorsBeforeSideEffects(t *testing.T) {
+	tmp := t.TempDir()
+	cfg := testRunConfig(tmp)
+	fakes := newRunFakes(cfg, time.Date(2026, 6, 5, 12, 34, 56, 0, time.UTC))
+	fakes.env["GITLAB_CONTROL_PAT"] = "control-pat"
+
+	cmd := newRunCommandWithDeps(fakes.deps())
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"XL-123", "--repo", "backend", "--agent", "cursor"})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("error = nil, want unsupported agent")
+	}
+	if !strings.Contains(err.Error(), `unsupported agent "cursor"`) {
+		t.Fatalf("error = %v, want unsupported agent message", err)
+	}
+	assertNoRunSideEffects(t, fakes)
 }
 
 func TestRunRejectsInvalidTaskIDBeforeSideEffects(t *testing.T) {
@@ -684,6 +807,27 @@ func assertNoRunSideEffects(t *testing.T, fakes *runFakes) {
 	}
 	if len(fakes.savedTasks) != 0 {
 		t.Fatalf("saved tasks = %#v, want none", fakes.savedTasks)
+	}
+}
+
+func singleDockerOptions(t *testing.T, fakes *runFakes) runtime.DockerOptions {
+	t.Helper()
+
+	if len(fakes.dockerOptions) != 1 {
+		t.Fatalf("docker options = %#v, want one call", fakes.dockerOptions)
+	}
+
+	return fakes.dockerOptions[0]
+}
+
+func assertRunCommandContains(t *testing.T, command []string, wants ...string) {
+	t.Helper()
+
+	commandText := strings.Join(command, "\n")
+	for _, want := range wants {
+		if !strings.Contains(commandText, want) {
+			t.Fatalf("docker command = %#v, want %q", command, want)
+		}
 	}
 }
 

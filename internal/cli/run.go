@@ -115,6 +115,16 @@ type runOptions struct {
 	remoteName   string
 }
 
+type runRuntimeSelection struct {
+	image   string
+	command []string
+}
+
+type runTemplateSpec struct {
+	image     string
+	preflight string
+}
+
 func runLocalOrRemote(ctx context.Context, deps runDeps, opts runOptions) error {
 	if err := validateRunTaskID(opts.taskID); err != nil {
 		return err
@@ -145,6 +155,11 @@ func runLocalOrRemote(ctx context.Context, deps runDeps, opts runOptions) error 
 	defaultBranch := strings.TrimSpace(repo.DefaultBranch)
 	if defaultBranch == "" {
 		defaultBranch = "main"
+	}
+
+	runRuntime, err := runRuntimeFor(cfg, opts)
+	if err != nil {
+		return err
 	}
 
 	controlPAT := deps.getenv("GITLAB_CONTROL_PAT")
@@ -182,6 +197,8 @@ func runLocalOrRemote(ctx context.Context, deps runDeps, opts runOptions) error 
 		GitDir:      gitDir,
 		GitLabToken: createdToken.Token,
 		GitLabHost:  cfg.GitLab.Host,
+		Image:       runRuntime.image,
+		Command:     runRuntime.command,
 	})
 	if err != nil {
 		return revokeOnFailure(err)
@@ -218,6 +235,78 @@ func runLocalOrRemote(ctx context.Context, deps runDeps, opts runOptions) error 
 
 	tokenCreated = false
 	return nil
+}
+
+func runRuntimeFor(cfg *config.Config, opts runOptions) (runRuntimeSelection, error) {
+	templateName := strings.TrimSpace(opts.templateName)
+	if templateName == "" {
+		templateName = strings.TrimSpace(cfg.Templates.Default)
+	}
+	if templateName == "" {
+		templateName = "generic"
+	}
+
+	template, ok := supportedRunTemplates()[templateName]
+	if !ok {
+		return runRuntimeSelection{}, fmt.Errorf("unsupported template %q; supported templates: generic, node, golang, python", templateName)
+	}
+
+	agent := strings.TrimSpace(opts.agent)
+	if agent == "" {
+		agent = "codex"
+	}
+	switch agent {
+	case "codex", "shell":
+	default:
+		return runRuntimeSelection{}, fmt.Errorf("unsupported agent %q; supported agents: codex, shell", agent)
+	}
+
+	return runRuntimeSelection{
+		image:   template.image,
+		command: buildRunCommand(template, agent),
+	}, nil
+}
+
+func supportedRunTemplates() map[string]runTemplateSpec {
+	return map[string]runTemplateSpec{
+		"generic": {
+			image: "node:22-bookworm",
+		},
+		"node": {
+			image:     "node:22-bookworm",
+			preflight: "node --version",
+		},
+		"golang": {
+			image:     "golang:1.22-bookworm",
+			preflight: "go version",
+		},
+		"python": {
+			image:     "python:3.12-bookworm",
+			preflight: "python --version",
+		},
+	}
+}
+
+func buildRunCommand(template runTemplateSpec, agent string) []string {
+	lines := []string{"set -euo pipefail"}
+	if template.preflight != "" {
+		lines = append(lines, template.preflight)
+	}
+
+	switch agent {
+	case "shell":
+		lines = append(lines, "exec bash")
+	case "codex":
+		lines = append(lines,
+			"if command -v codex >/dev/null 2>&1; then",
+			"  exec codex",
+			"fi",
+			`printf '%s\n' 'codex executable not found; falling back to bash' >&2`,
+			"exec bash",
+		)
+	}
+
+	return []string{"bash", "-lc", strings.Join(lines, "\n")}
 }
 
 func validateRunTaskID(taskID string) error {
