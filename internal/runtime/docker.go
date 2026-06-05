@@ -178,7 +178,7 @@ func dockerCommandSuffix(command []string) ([]string, error) {
 		return nil, fmt.Errorf("Command is required")
 	}
 
-	args := []string{"bash", "-lc", defaultDockerScript(), "--"}
+	args := []string{"-lc", defaultDockerScript(), "--"}
 	args = append(args, command...)
 	return args, nil
 }

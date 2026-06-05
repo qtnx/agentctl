@@ -66,14 +66,14 @@ func TestDockerInvocationBuildsUntrustedRunCommandWithoutLeakingToken(t *testing
 		t.Fatalf("command = %#v, want --entrypoint bash before image", args)
 	}
 	commandSuffix := args[imageIndex+1:]
-	if len(commandSuffix) < 5 || commandSuffix[0] != "bash" || commandSuffix[1] != "-lc" {
-		t.Fatalf("command suffix = %#v, want bash -lc setup -- command", commandSuffix)
+	if len(commandSuffix) != 4 || commandSuffix[0] != "-lc" {
+		t.Fatalf("command suffix = %#v, want -lc setup -- bash", commandSuffix)
 	}
-	if commandSuffix[3] != "--" || commandSuffix[4] != "bash" {
+	if commandSuffix[2] != "--" || commandSuffix[3] != "bash" {
 		t.Fatalf("command suffix = %#v, want default command after --", commandSuffix)
 	}
 
-	script := commandSuffix[2]
+	script := commandSuffix[1]
 	for _, want := range []string{
 		"GIT_CONFIG_COUNT",
 		`url.https://${GITLAB_HOST}/.insteadOf`,
@@ -317,22 +317,22 @@ func TestDockerInvocationRunsSetupBeforeCustomCommand(t *testing.T) {
 	}
 
 	got := args[imageIndex+1:]
-	if len(got) < 7 || got[0] != "bash" || got[1] != "-lc" {
-		t.Fatalf("command suffix = %#v, want bash -lc setup -- custom command", got)
+	if len(got) < 6 || got[0] != "-lc" {
+		t.Fatalf("command suffix = %#v, want -lc setup -- custom command", got)
 	}
-	if strings.Contains(got[2], "git remote set-url") {
-		t.Fatalf("setup script = %q, must not mutate git remote", got[2])
+	if strings.Contains(got[1], "git remote set-url") {
+		t.Fatalf("setup script = %q, must not mutate git remote", got[1])
 	}
-	if !strings.Contains(got[2], "GIT_CONFIG_COUNT") || !strings.Contains(got[2], `exec "$@"`) {
-		t.Fatalf("setup script = %q, want process git config and exec argv", got[2])
+	if !strings.Contains(got[1], "GIT_CONFIG_COUNT") || !strings.Contains(got[1], `exec "$@"`) {
+		t.Fatalf("setup script = %q, want process git config and exec argv", got[1])
 	}
-	if got[3] != "--" {
+	if got[2] != "--" {
 		t.Fatalf("command suffix = %#v, want -- before custom command", got)
 	}
 
 	want := []string{"go", "test", "./..."}
-	if !reflect.DeepEqual(got[4:], want) {
-		t.Fatalf("custom command = %#v, want %#v", got[4:], want)
+	if !reflect.DeepEqual(got[3:], want) {
+		t.Fatalf("custom command = %#v, want %#v", got[3:], want)
 	}
 }
 
@@ -354,10 +354,10 @@ func setupScript(t *testing.T, args []string, image string) string {
 		t.Fatalf("command = %#v, want image %q", args, image)
 	}
 	commandSuffix := args[imageIndex+1:]
-	if len(commandSuffix) < 3 {
+	if len(commandSuffix) < 2 {
 		t.Fatalf("command suffix = %#v, want setup script", commandSuffix)
 	}
-	return commandSuffix[2]
+	return commandSuffix[1]
 }
 
 func containsArg(args []string, want string) bool {
