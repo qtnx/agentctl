@@ -420,6 +420,42 @@ func TestRunRevokesTokenWhenLaterStepFails(t *testing.T) {
 	}
 }
 
+func TestRunTokenCreationFailureRemovesPreparedWorktree(t *testing.T) {
+	tmp := t.TempDir()
+	cfg := testRunConfig(tmp)
+	fakes := newRunFakes(cfg, time.Date(2026, 6, 5, 12, 34, 56, 0, time.UTC))
+	fakes.env["GITLAB_CONTROL_PAT"] = "control-pat"
+	createErr := errors.New("token creation failed")
+	fakes.createTokenErr = createErr
+
+	cmd := newRunCommandWithDeps(fakes.deps())
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"XL-123", "--repo", "backend"})
+
+	err := cmd.Execute()
+	if !errors.Is(err, createErr) {
+		t.Fatalf("error = %v, want token creation error", err)
+	}
+
+	wantWorktree := filepath.Join(cfg.BaseDir, "XL-123")
+	if !reflect.DeepEqual(fakes.removeWorktreeCalls, []removeWorktreeCall{{
+		repoPath: cfg.Repos["backend"].Path,
+		worktree: wantWorktree,
+	}}) {
+		t.Fatalf("remove worktree calls = %#v", fakes.removeWorktreeCalls)
+	}
+	if len(fakes.tokenClients) != 1 {
+		t.Fatalf("token clients = %d, want 1", len(fakes.tokenClients))
+	}
+	if len(fakes.tokenClients[0].revokeCalls) != 0 {
+		t.Fatalf("revoke calls = %#v, want none", fakes.tokenClients[0].revokeCalls)
+	}
+	if len(fakes.dockerOptions) != 0 {
+		t.Fatalf("docker options = %#v, want none", fakes.dockerOptions)
+	}
+}
+
 func TestRunDockerInvocationFailureReportsRevokeFailure(t *testing.T) {
 	tmp := t.TempDir()
 	cfg := testRunConfig(tmp)
@@ -457,6 +493,51 @@ func TestRunDockerInvocationFailureReportsRevokeFailure(t *testing.T) {
 	}
 	if len(fakes.tmuxStarts) != 0 {
 		t.Fatalf("tmux starts = %#v, want none", fakes.tmuxStarts)
+	}
+}
+
+func TestRunDockerInvocationFailureRemovesWorktreeAndReportsRemovalFailure(t *testing.T) {
+	tmp := t.TempDir()
+	cfg := testRunConfig(tmp)
+	fakes := newRunFakes(cfg, time.Date(2026, 6, 5, 12, 34, 56, 0, time.UTC))
+	fakes.env["GITLAB_CONTROL_PAT"] = "control-pat"
+	dockerErr := errors.New("docker invocation failed")
+	removeWorktreeErr := errors.New("worktree remove failed")
+	fakes.dockerErr = dockerErr
+	fakes.removeWorktreeErr = removeWorktreeErr
+
+	cmd := newRunCommandWithDeps(fakes.deps())
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"XL-123", "--repo", "backend"})
+
+	err := cmd.Execute()
+	if !errors.Is(err, dockerErr) {
+		t.Fatalf("error = %v, want docker error", err)
+	}
+	if !errors.Is(err, removeWorktreeErr) {
+		t.Fatalf("error = %v, want worktree remove error", err)
+	}
+	if !strings.Contains(err.Error(), "docker invocation failed") || !strings.Contains(err.Error(), "git worktree cleanup failed") {
+		t.Fatalf("error = %v, want docker and worktree cleanup messages", err)
+	}
+
+	if len(fakes.tokenClients) != 1 {
+		t.Fatalf("token clients = %d, want 1", len(fakes.tokenClients))
+	}
+	tokenClient := fakes.tokenClients[0]
+	if !reflect.DeepEqual(tokenClient.revokeCalls, []revokeTokenCall{{
+		projectID: "123",
+		tokenID:   "98765",
+	}}) {
+		t.Fatalf("revoke calls = %#v", tokenClient.revokeCalls)
+	}
+	wantWorktree := filepath.Join(cfg.BaseDir, "XL-123")
+	if !reflect.DeepEqual(fakes.removeWorktreeCalls, []removeWorktreeCall{{
+		repoPath: cfg.Repos["backend"].Path,
+		worktree: wantWorktree,
+	}}) {
+		t.Fatalf("remove worktree calls = %#v", fakes.removeWorktreeCalls)
 	}
 }
 
@@ -571,6 +652,13 @@ func TestRunStopsTmuxAndRevokesTokenWhenStateSaveFails(t *testing.T) {
 	envPath := filepath.Join(cfg.StateDir, "env", "XL-123.env")
 	if _, err := os.Stat(envPath); !os.IsNotExist(err) {
 		t.Fatalf("env file stat after state save failure = %v, want not exists", err)
+	}
+	wantWorktree := filepath.Join(cfg.BaseDir, "XL-123")
+	if !reflect.DeepEqual(fakes.removeWorktreeCalls, []removeWorktreeCall{{
+		repoPath: cfg.Repos["backend"].Path,
+		worktree: wantWorktree,
+	}}) {
+		t.Fatalf("remove worktree calls = %#v", fakes.removeWorktreeCalls)
 	}
 }
 
@@ -793,27 +881,30 @@ func testRunConfig(tmp string) *config.Config {
 }
 
 type runFakes struct {
-	cfg             *config.Config
-	now             time.Time
-	env             map[string]string
-	loadConfigCalls int
-	loadConfigPaths []string
-	prepareCalls    []prepareWorktreeCall
-	tokenClients    []*fakeRunTokenClient
-	createdToken    tokenbroker.CreatedToken
-	dockerOptions   []runtime.DockerOptions
-	dockerErr       error
-	tmuxStarts      []tmuxStartCall
-	tmuxStops       []string
-	tmuxErr         error
-	stopTmuxErr     error
-	saveErr         error
-	revokeErr       error
-	removeEnvErr    error
-	removeEnvCalls  []string
-	savedTasks      []state.Task
-	remoteCalls     []runRemoteCall
-	remoteErr       error
+	cfg                 *config.Config
+	now                 time.Time
+	env                 map[string]string
+	loadConfigCalls     int
+	loadConfigPaths     []string
+	prepareCalls        []prepareWorktreeCall
+	removeWorktreeCalls []removeWorktreeCall
+	tokenClients        []*fakeRunTokenClient
+	createdToken        tokenbroker.CreatedToken
+	createTokenErr      error
+	dockerOptions       []runtime.DockerOptions
+	dockerErr           error
+	tmuxStarts          []tmuxStartCall
+	tmuxStops           []string
+	tmuxErr             error
+	stopTmuxErr         error
+	saveErr             error
+	revokeErr           error
+	removeWorktreeErr   error
+	removeEnvErr        error
+	removeEnvCalls      []string
+	savedTasks          []state.Task
+	remoteCalls         []runRemoteCall
+	remoteErr           error
 }
 
 func newRunFakes(cfg *config.Config, now time.Time) *runFakes {
@@ -851,11 +942,19 @@ func (f *runFakes) deps() runDeps {
 			})
 			return nil
 		},
+		removeWorktree: func(_ context.Context, repoPath, worktree string) error {
+			f.removeWorktreeCalls = append(f.removeWorktreeCalls, removeWorktreeCall{
+				repoPath: repoPath,
+				worktree: worktree,
+			})
+			return f.removeWorktreeErr
+		},
 		newTokenClient: func(baseURL, controlPAT string) runTokenClient {
 			client := &fakeRunTokenClient{
 				baseURL:     baseURL,
 				controlPAT:  controlPAT,
 				createToken: f.createdToken,
+				createErr:   f.createTokenErr,
 				revokeErr:   f.revokeErr,
 			}
 			f.tokenClients = append(f.tokenClients, client)
@@ -917,6 +1016,9 @@ func assertNoRunSideEffects(t *testing.T, fakes *runFakes) {
 	if len(fakes.prepareCalls) != 0 {
 		t.Fatalf("prepare calls = %#v, want none", fakes.prepareCalls)
 	}
+	if len(fakes.removeWorktreeCalls) != 0 {
+		t.Fatalf("remove worktree calls = %#v, want none", fakes.removeWorktreeCalls)
+	}
 	if len(fakes.tokenClients) != 0 {
 		t.Fatalf("token clients = %d, want none", len(fakes.tokenClients))
 	}
@@ -972,6 +1074,11 @@ type prepareWorktreeCall struct {
 	worktree      string
 }
 
+type removeWorktreeCall struct {
+	repoPath string
+	worktree string
+}
+
 type createTokenCall struct {
 	projectID string
 	name      string
@@ -987,6 +1094,7 @@ type fakeRunTokenClient struct {
 	baseURL     string
 	controlPAT  string
 	createToken tokenbroker.CreatedToken
+	createErr   error
 	revokeErr   error
 	createCalls []createTokenCall
 	revokeCalls []revokeTokenCall
@@ -998,6 +1106,9 @@ func (f *fakeRunTokenClient) CreateProjectToken(_ context.Context, projectID, na
 		name:      name,
 		expiresAt: expiresAt,
 	})
+	if f.createErr != nil {
+		return tokenbroker.CreatedToken{}, f.createErr
+	}
 	return f.createToken, nil
 }
 

@@ -77,6 +77,99 @@ func TestCleanupContinuesAfterFailureAndKeepsStateForRetry(t *testing.T) {
 	}
 }
 
+func TestCleanupRemoveContainerAlreadyRemovedDeletesState(t *testing.T) {
+	fakes := &cleanupFakes{containerErr: ErrAlreadyRemoved}
+	service := NewService(fakes.deps())
+	task := cleanupTestTask()
+
+	err := service.Cleanup(context.Background(), Request{
+		TaskID:              "XL-123",
+		Task:                task,
+		RepoPath:            "/repo/backend",
+		StateDir:            "/state",
+		GitLabBaseURL:       "https://gitlab.example.com",
+		ControlPAT:          "control-pat",
+		ExpectedTmuxSession: "agentctl-XL-123",
+		ExpectedWorktree:    "/worktrees/XL-123",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	want := []cleanupCall{
+		{step: "revoke", baseURL: "https://gitlab.example.com", controlPAT: "control-pat", projectID: "123", tokenID: "98765"},
+		{step: "container", containerName: "agent-XL-123"},
+		{step: "tmux", taskID: "XL-123"},
+		{step: "worktree", repoPath: "/repo/backend", worktree: "/worktrees/XL-123"},
+		{step: "delete", taskID: "XL-123"},
+	}
+	if !reflect.DeepEqual(fakes.calls, want) {
+		t.Fatalf("calls = %#v, want %#v", fakes.calls, want)
+	}
+}
+
+func TestCleanupKillSessionAlreadyRemovedDeletesState(t *testing.T) {
+	fakes := &cleanupFakes{tmuxErr: ErrAlreadyRemoved}
+	service := NewService(fakes.deps())
+	task := cleanupTestTask()
+
+	err := service.Cleanup(context.Background(), Request{
+		TaskID:              "XL-123",
+		Task:                task,
+		RepoPath:            "/repo/backend",
+		StateDir:            "/state",
+		GitLabBaseURL:       "https://gitlab.example.com",
+		ControlPAT:          "control-pat",
+		ExpectedTmuxSession: "agentctl-XL-123",
+		ExpectedWorktree:    "/worktrees/XL-123",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	want := []cleanupCall{
+		{step: "revoke", baseURL: "https://gitlab.example.com", controlPAT: "control-pat", projectID: "123", tokenID: "98765"},
+		{step: "container", containerName: "agent-XL-123"},
+		{step: "tmux", taskID: "XL-123"},
+		{step: "worktree", repoPath: "/repo/backend", worktree: "/worktrees/XL-123"},
+		{step: "delete", taskID: "XL-123"},
+	}
+	if !reflect.DeepEqual(fakes.calls, want) {
+		t.Fatalf("calls = %#v, want %#v", fakes.calls, want)
+	}
+}
+
+func TestCleanupRemoveWorktreeAlreadyRemovedDeletesState(t *testing.T) {
+	fakes := &cleanupFakes{worktreeErr: ErrAlreadyRemoved}
+	service := NewService(fakes.deps())
+	task := cleanupTestTask()
+
+	err := service.Cleanup(context.Background(), Request{
+		TaskID:              "XL-123",
+		Task:                task,
+		RepoPath:            "/repo/backend",
+		StateDir:            "/state",
+		GitLabBaseURL:       "https://gitlab.example.com",
+		ControlPAT:          "control-pat",
+		ExpectedTmuxSession: "agentctl-XL-123",
+		ExpectedWorktree:    "/worktrees/XL-123",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	want := []cleanupCall{
+		{step: "revoke", baseURL: "https://gitlab.example.com", controlPAT: "control-pat", projectID: "123", tokenID: "98765"},
+		{step: "container", containerName: "agent-XL-123"},
+		{step: "tmux", taskID: "XL-123"},
+		{step: "worktree", repoPath: "/repo/backend", worktree: "/worktrees/XL-123"},
+		{step: "delete", taskID: "XL-123"},
+	}
+	if !reflect.DeepEqual(fakes.calls, want) {
+		t.Fatalf("calls = %#v, want %#v", fakes.calls, want)
+	}
+}
+
 func TestCleanupSkipsTokenRevokeWhenTokenIDIsEmpty(t *testing.T) {
 	fakes := &cleanupFakes{}
 	service := NewService(fakes.deps())

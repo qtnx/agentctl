@@ -35,6 +35,7 @@ type runDeps struct {
 	getenv              func(key string) string
 	now                 func() time.Time
 	prepareWorktree     func(ctx context.Context, repoPath, defaultBranch, taskID, worktree string) error
+	removeWorktree      func(ctx context.Context, repoPath, worktree string) error
 	newTokenClient      func(baseURL, controlPAT string) runTokenClient
 	dockerInvocationFor func(opts runtime.DockerOptions) (runtime.DockerInvocation, error)
 	startTmux           func(ctx context.Context, taskID, worktree string, command []string) error
@@ -59,6 +60,7 @@ func defaultRunDeps() runDeps {
 		getenv:          os.Getenv,
 		now:             time.Now,
 		prepareWorktree: gitService.PrepareWorktree,
+		removeWorktree:  gitService.RemoveWorktree,
 		newTokenClient: func(baseURL, controlPAT string) runTokenClient {
 			return tokenbroker.NewGitLabClient(baseURL, controlPAT, nil)
 		},
@@ -182,17 +184,17 @@ func runLocalOrRemote(ctx context.Context, deps runDeps, opts runOptions) error 
 	tokenClient := deps.newTokenClient("https://"+cfg.GitLab.Host, controlPAT)
 	createdToken, err := tokenClient.CreateProjectToken(ctx, repo.ProjectID, tokenName, now.Add(24*time.Hour))
 	if err != nil {
-		return err
+		return cleanupPreparedWorktree(ctx, deps, repo.Path, worktree, err)
 	}
 
 	tokenCreated := true
-	revokeOnFailure := func(failure error) error {
+	cleanupAfterTokenFailure := func(failure error) error {
 		if failure != nil && tokenCreated {
 			if err := tokenClient.RevokeProjectToken(ctx, repo.ProjectID, createdToken.ID); err != nil {
-				return joinCleanup(failure, "token revoke cleanup failed", err)
+				failure = joinCleanup(failure, "token revoke cleanup failed", err)
 			}
 		}
-		return failure
+		return cleanupPreparedWorktree(ctx, deps, repo.Path, worktree, failure)
 	}
 
 	invocation, err := deps.dockerInvocationFor(runtime.DockerOptions{
@@ -205,18 +207,18 @@ func runLocalOrRemote(ctx context.Context, deps runDeps, opts runOptions) error 
 		Command:     runRuntime.command,
 	})
 	if err != nil {
-		return revokeOnFailure(err)
+		return cleanupAfterTokenFailure(err)
 	}
 
 	envFile, err := writeDockerEnvFile(cfg.StateDir, opts.taskID, invocation.Env)
 	if err != nil {
-		return revokeOnFailure(err)
+		return cleanupAfterTokenFailure(err)
 	}
 
 	tmuxCommand := wrapDockerCommandWithEnvFile(envFile, invocation.Command)
 	if err := deps.startTmux(ctx, opts.taskID, worktree, tmuxCommand); err != nil {
 		err = joinCleanup(err, "env file remove cleanup failed", deps.removeEnvFile(envFile))
-		return revokeOnFailure(err)
+		return cleanupAfterTokenFailure(err)
 	}
 
 	task := state.Task{
@@ -234,7 +236,7 @@ func runLocalOrRemote(ctx context.Context, deps runDeps, opts runOptions) error 
 		CreatedAt:       now,
 	}
 	if err := deps.saveState(cfg.StateDir, task); err != nil {
-		return cleanupAfterStateSaveFailure(ctx, deps, envFile, opts.taskID, tokenClient, repo.ProjectID, createdToken.ID, err)
+		return cleanupAfterStateSaveFailure(ctx, deps, repo.Path, worktree, envFile, opts.taskID, tokenClient, repo.ProjectID, createdToken.ID, err)
 	}
 
 	tokenCreated = false
@@ -380,7 +382,7 @@ func validateRunTaskID(taskID string) error {
 	return nil
 }
 
-func cleanupAfterStateSaveFailure(ctx context.Context, deps runDeps, envFile, taskID string, tokenClient runTokenClient, projectID, tokenID string, saveErr error) error {
+func cleanupAfterStateSaveFailure(ctx context.Context, deps runDeps, repoPath, worktree, envFile, taskID string, tokenClient runTokenClient, projectID, tokenID string, saveErr error) error {
 	errs := []error{saveErr}
 	if err := deps.removeEnvFile(envFile); err != nil {
 		errs = append(errs, fmt.Errorf("env file remove cleanup failed: %w", err))
@@ -391,8 +393,15 @@ func cleanupAfterStateSaveFailure(ctx context.Context, deps runDeps, envFile, ta
 	if err := tokenClient.RevokeProjectToken(ctx, projectID, tokenID); err != nil {
 		errs = append(errs, fmt.Errorf("token revoke cleanup failed: %w", err))
 	}
+	if err := deps.removeWorktree(ctx, repoPath, worktree); err != nil {
+		errs = append(errs, fmt.Errorf("git worktree cleanup failed: %w", err))
+	}
 
 	return errors.Join(errs...)
+}
+
+func cleanupPreparedWorktree(ctx context.Context, deps runDeps, repoPath, worktree string, failure error) error {
+	return joinCleanup(failure, "git worktree cleanup failed", deps.removeWorktree(ctx, repoPath, worktree))
 }
 
 func joinCleanup(original error, label string, cleanupErr error) error {

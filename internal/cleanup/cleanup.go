@@ -9,6 +9,9 @@ import (
 	"github.com/your-org/agentctl/internal/state"
 )
 
+// ErrAlreadyRemoved marks cleanup targets that are already gone and safe to treat as cleaned.
+var ErrAlreadyRemoved = errors.New("resource already removed")
+
 type Request struct {
 	TaskID              string
 	Task                state.Task
@@ -56,13 +59,17 @@ func (s *Service) Cleanup(ctx context.Context, req Request) error {
 	if req.Task.ContainerName != expectedContainerName {
 		errs = append(errs, fmt.Errorf("docker container cleanup failed: state container name %q does not match expected %q", req.Task.ContainerName, expectedContainerName))
 	} else if err := s.deps.RemoveContainer(ctx, req.Task.ContainerName); err != nil {
-		errs = append(errs, fmt.Errorf("docker container cleanup failed: %w", err))
+		if !errors.Is(err, ErrAlreadyRemoved) {
+			errs = append(errs, fmt.Errorf("docker container cleanup failed: %w", err))
+		}
 	}
 
 	if strings.TrimSpace(req.Task.TmuxSession) == "" || req.Task.TmuxSession != req.ExpectedTmuxSession {
 		errs = append(errs, fmt.Errorf("tmux session cleanup failed: state tmux session %q does not match expected %q", req.Task.TmuxSession, req.ExpectedTmuxSession))
 	} else if err := s.deps.KillSession(ctx, req.TaskID); err != nil {
-		errs = append(errs, fmt.Errorf("tmux session cleanup failed: %w", err))
+		if !errors.Is(err, ErrAlreadyRemoved) {
+			errs = append(errs, fmt.Errorf("tmux session cleanup failed: %w", err))
+		}
 	}
 
 	if strings.TrimSpace(req.Task.Worktree) == "" || req.Task.Worktree != req.ExpectedWorktree {
@@ -72,7 +79,9 @@ func (s *Service) Cleanup(ctx context.Context, req Request) error {
 	} else if strings.TrimSpace(req.RepoPath) == "" {
 		errs = append(errs, fmt.Errorf("git worktree cleanup failed: repo path is required"))
 	} else if err := s.deps.RemoveWorktree(ctx, req.RepoPath, req.Task.Worktree); err != nil {
-		errs = append(errs, fmt.Errorf("git worktree cleanup failed: %w", err))
+		if !errors.Is(err, ErrAlreadyRemoved) {
+			errs = append(errs, fmt.Errorf("git worktree cleanup failed: %w", err))
+		}
 	}
 
 	if len(errs) > 0 {
