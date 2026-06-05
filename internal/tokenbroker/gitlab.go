@@ -104,6 +104,9 @@ func (c *GitLabClient) RevokeProjectToken(ctx context.Context, projectID, tokenI
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode == http.StatusNotFound {
+		return nil
+	}
 	if !is2xx(resp.StatusCode) {
 		return fmt.Errorf("gitlab revoke project token failed: status %d", resp.StatusCode)
 	}

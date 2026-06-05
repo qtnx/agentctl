@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -110,6 +111,7 @@ func cleanupTask(ctx context.Context, deps cleanupDeps, taskID, configPath strin
 		GitLabBaseURL:       "https://" + host,
 		ControlPAT:          deps.getenv("GITLAB_CONTROL_PAT"),
 		ExpectedTmuxSession: tmux.SessionName(taskID),
+		ExpectedWorktree:    filepath.Join(cfg.BaseDir, taskID),
 		RepoLookupError:     repoLookupErr,
 	})
 }

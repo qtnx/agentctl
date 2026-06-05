@@ -116,9 +116,23 @@ func TestRevokeProjectTokenSendsExpectedRequest(t *testing.T) {
 	}
 }
 
-func TestRevokeProjectTokenReturnsErrorForNotFound(t *testing.T) {
+func TestRevokeProjectTokenTreatsNotFoundAsSuccess(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	client := NewGitLabClient(server.URL, "control-pat", server.Client())
+
+	err := client.RevokeProjectToken(context.Background(), "123", "98765")
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRevokeProjectTokenReturnsErrorForServerError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	defer server.Close()
 

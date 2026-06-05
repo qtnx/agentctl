@@ -17,6 +17,7 @@ type Request struct {
 	GitLabBaseURL       string
 	ControlPAT          string
 	ExpectedTmuxSession string
+	ExpectedWorktree    string
 	RepoLookupError     error
 }
 
@@ -51,24 +52,25 @@ func (s *Service) Cleanup(ctx context.Context, req Request) error {
 		}
 	}
 
-	if strings.TrimSpace(req.Task.ContainerName) == "" {
-		errs = append(errs, fmt.Errorf("docker container cleanup failed: container name is required"))
+	expectedContainerName := "agent-" + req.TaskID
+	if req.Task.ContainerName != expectedContainerName {
+		errs = append(errs, fmt.Errorf("docker container cleanup failed: state container name %q does not match expected %q", req.Task.ContainerName, expectedContainerName))
 	} else if err := s.deps.RemoveContainer(ctx, req.Task.ContainerName); err != nil {
 		errs = append(errs, fmt.Errorf("docker container cleanup failed: %w", err))
 	}
 
-	if req.Task.TmuxSession != "" && req.ExpectedTmuxSession != "" && req.Task.TmuxSession != req.ExpectedTmuxSession {
+	if strings.TrimSpace(req.Task.TmuxSession) == "" || req.Task.TmuxSession != req.ExpectedTmuxSession {
 		errs = append(errs, fmt.Errorf("tmux session cleanup failed: state tmux session %q does not match expected %q", req.Task.TmuxSession, req.ExpectedTmuxSession))
 	} else if err := s.deps.KillSession(ctx, req.TaskID); err != nil {
 		errs = append(errs, fmt.Errorf("tmux session cleanup failed: %w", err))
 	}
 
-	if req.RepoLookupError != nil {
+	if strings.TrimSpace(req.Task.Worktree) == "" || req.Task.Worktree != req.ExpectedWorktree {
+		errs = append(errs, fmt.Errorf("git worktree cleanup failed: state worktree %q does not match expected %q", req.Task.Worktree, req.ExpectedWorktree))
+	} else if req.RepoLookupError != nil {
 		errs = append(errs, fmt.Errorf("git worktree cleanup failed: %w", req.RepoLookupError))
 	} else if strings.TrimSpace(req.RepoPath) == "" {
 		errs = append(errs, fmt.Errorf("git worktree cleanup failed: repo path is required"))
-	} else if strings.TrimSpace(req.Task.Worktree) == "" {
-		errs = append(errs, fmt.Errorf("git worktree cleanup failed: worktree path is required"))
 	} else if err := s.deps.RemoveWorktree(ctx, req.RepoPath, req.Task.Worktree); err != nil {
 		errs = append(errs, fmt.Errorf("git worktree cleanup failed: %w", err))
 	}

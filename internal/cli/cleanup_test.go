@@ -19,6 +19,7 @@ func TestCleanupLoadsConfigStateAndCallsCleanupService(t *testing.T) {
 	tmp := t.TempDir()
 	cfg := testCleanupConfig(tmp)
 	task := cleanupCLITestTask()
+	task.Worktree = filepath.Join(cfg.BaseDir, "XL-123")
 	fakes := &cleanupCLIFakes{
 		cfg:  cfg,
 		task: task,
@@ -67,6 +68,9 @@ func TestCleanupLoadsConfigStateAndCallsCleanupService(t *testing.T) {
 	}
 	if req.ExpectedTmuxSession != "agentctl-XL-123" {
 		t.Fatalf("expected tmux session = %q", req.ExpectedTmuxSession)
+	}
+	if req.ExpectedWorktree != filepath.Join(cfg.BaseDir, "XL-123") {
+		t.Fatalf("expected worktree = %q, want %q", req.ExpectedWorktree, filepath.Join(cfg.BaseDir, "XL-123"))
 	}
 	if req.RepoLookupError != nil {
 		t.Fatalf("repo lookup error = %v, want nil", req.RepoLookupError)
@@ -136,6 +140,7 @@ func TestCleanupMissingRepoInConfigSurfacesAndStillCallsCleanupService(t *testin
 	cfg := testCleanupConfig(t.TempDir())
 	cfg.Repos = map[string]config.Repo{}
 	task := cleanupCLITestTask()
+	task.Worktree = filepath.Join(cfg.BaseDir, "XL-123")
 	fakes := &cleanupCLIFakes{
 		cfg:  cfg,
 		task: task,
@@ -160,6 +165,9 @@ func TestCleanupMissingRepoInConfigSurfacesAndStillCallsCleanupService(t *testin
 	req := fakes.cleanupCalls[0]
 	if req.RepoPath != "" {
 		t.Fatalf("repo path = %q, want empty when repo is missing", req.RepoPath)
+	}
+	if req.ExpectedWorktree != filepath.Join(cfg.BaseDir, "XL-123") {
+		t.Fatalf("expected worktree = %q, want %q", req.ExpectedWorktree, filepath.Join(cfg.BaseDir, "XL-123"))
 	}
 	if req.RepoLookupError == nil {
 		t.Fatal("repo lookup error = nil, want missing repo error")
