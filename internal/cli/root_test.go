@@ -112,6 +112,28 @@ func TestRootAgentFlagRunsArbitraryExecutableAgent(t *testing.T) {
 	assertRunCommandContains(t, opts.Command, "command -v aider", "exec aider")
 }
 
+func TestRootAgentFlagPassesArgsToExecutableAgent(t *testing.T) {
+	tmp := t.TempDir()
+	cfg := testRunConfig(tmp)
+	fakes := newRunFakes(cfg, time.Date(2026, 6, 5, 12, 34, 56, 0, time.UTC))
+	fakes.env["GITLAB_CONTROL_PAT"] = "control-pat"
+
+	cmd := newRootCommandWithDeps(fakes.deps())
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"--agent", "aider", "--repo", "backend", "--config", filepath.Join(tmp, "config.yaml"), "--", "--yes", "--message", "hello world"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	opts := singleDockerOptions(t, fakes)
+	if opts.TaskID != "aider-1780662896" {
+		t.Fatalf("task id = %q, want generated aider task id", opts.TaskID)
+	}
+	assertRunCommandContains(t, opts.Command, "exec aider '--yes' '--message' 'hello world'")
+}
+
 func TestRootAgentNoTmuxStartsDetachedDockerWithClaudeCreds(t *testing.T) {
 	tmp := t.TempDir()
 	cfg := testRunConfig(tmp)

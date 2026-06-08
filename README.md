@@ -231,11 +231,12 @@ For quick starts, the root command can run an agent directly and generate the ta
 agentctl --agent codex
 agentctl --agent claude
 agentctl --agent ompx
+agentctl --agent ompx -- --model gpt-5
 agentctl --agent claude --repo backend --detach
 agentctl --agent claude --repo backend --no-tmux
 ```
 
-`--agent <name>` accepts any safe executable name, not only built-in names. If that command exists in the selected runtime's `PATH`, `agentctl` runs it directly; otherwise it falls back to an interactive login shell. Use `--agent shell` to start the shell intentionally.
+`--agent <name>` accepts any safe executable name, not only built-in names. If that command exists in the selected runtime's `PATH`, `agentctl` runs it directly; otherwise it falls back to an interactive login shell. Arguments after `--` are passed to the agent executable. Use `--agent shell` to start the shell intentionally.
 
 Generated task ids use `<agent>-<unix-time>`, for example `claude-1780662896`. You can still pass an explicit id as an optional positional argument: `agentctl --agent claude XL-123`.
 
@@ -243,6 +244,7 @@ When you are already inside a GitLab-backed repository, `--repo` is optional:
 
 ```bash
 agentctl run XL-123 --agent codex
+agentctl run XL-123 --agent codex -- --model gpt-5
 ```
 
 In that mode, `agentctl` uses the current directory. If `origin` points at the configured GitLab host, it creates an isolated git worktree and derives the GitLab project path from `origin`. If the directory is not a Git repo, has no usable `origin`, or points at another host such as GitHub, it runs as a plain workspace: no GitLab token is created, no git worktree is created, and cleanup will not remove the current directory.
@@ -272,7 +274,7 @@ agentctl run XL-123 --repo backend --agent codex --detach
 
 If `tmux` is installed, Docker starts inside tmux session `agentctl-XL-123`. Pass `--no-tmux` to start Docker directly even when tmux is installed. If `tmux` is not installed, Docker starts directly in detached mode and `agentctl attach XL-123` uses `docker attach agent-XL-123`. Docker detach uses Docker's terminal escape sequence, `Ctrl-p Ctrl-q`. tmux sessions are kept open if the agent command exits, so `attach` can show the exit status instead of failing with `no sessions`.
 
-Docker is preferred for `untrusted` code. On macOS only, if Docker is missing but `sandbox-exec` and `tmux` are available, `agentctl run` prompts before falling back to a native macOS sandbox. The prompt explains that `sandbox-exec` is weaker than Docker: it has no container filesystem, CPU, memory, or PID isolation. The default `strict` sandbox denies reads and writes outside the configured allowlists, so it may break local toolchains until their paths are added under `sandbox.macos.allow_read` or their executable names are listed under `sandbox.macos.allow_tools`. Declining the prompt exits before creating worktrees, tokens, or state. Only the `untrusted` risk profile is currently supported.
+Docker is preferred for `untrusted` code. On macOS only, if Docker is missing but `sandbox-exec` is available, `agentctl run` prompts before falling back to a native macOS sandbox. With `tmux`, the sandbox runs in an attachable session. Without `tmux`, or when `--no-tmux` is set, the sandbox runs in the foreground and cannot be reattached. The prompt explains that `sandbox-exec` is weaker than Docker: it has no container filesystem, CPU, memory, or PID isolation. The default `strict` sandbox denies reads and writes outside the configured allowlists, so it may break local toolchains until their paths are added under `sandbox.macos.allow_read` or their executable names are listed under `sandbox.macos.allow_tools`. Declining the prompt exits before creating worktrees, tokens, or state. Only the `untrusted` risk profile is currently supported.
 
 Codex, Claude, and OMPX auth/config are linked into the isolated task home when they exist on the host:
 

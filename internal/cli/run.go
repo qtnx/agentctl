@@ -147,15 +147,20 @@ func newRunCommandWithDeps(deps runDeps) *cobra.Command {
 	var noTmux bool
 
 	cmd := &cobra.Command{
-		Use:   "run TASK_ID",
+		Use:   "run TASK_ID [-- AGENT_ARGS...]",
 		Short: "Start an agent workspace",
-		Args:  cobra.ExactArgs(1),
+		Args:  cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			taskID, agentArgs, err := parseRunArgs(args, cmd.ArgsLenAtDash())
+			if err != nil {
+				return err
+			}
 			opts := runOptions{
-				taskID:       args[0],
+				taskID:       taskID,
 				repoName:     repoName,
 				configPath:   configPath,
 				agent:        agent,
+				agentArgs:    agentArgs,
 				risk:         risk,
 				templateName: templateName,
 				remoteName:   remoteName,
@@ -184,12 +189,29 @@ type runOptions struct {
 	repoName     string
 	configPath   string
 	agent        string
+	agentArgs    []string
 	risk         string
 	templateName string
 	remoteName   string
 	detach       bool
 	noTmux       bool
 	out          io.Writer
+}
+
+func parseRunArgs(args []string, argsLenAtDash int) (string, []string, error) {
+	switch {
+	case argsLenAtDash == 1:
+		return args[0], append([]string(nil), args[1:]...), nil
+	case argsLenAtDash == 0:
+		return "", nil, fmt.Errorf("run requires a task id before --")
+	case argsLenAtDash > 1:
+		return "", nil, fmt.Errorf("run accepts exactly one task id before --")
+	}
+
+	if len(args) != 1 {
+		return "", nil, fmt.Errorf("run accepts exactly one task id")
+	}
+	return args[0], nil, nil
 }
 
 type runRuntimeSelection struct {
@@ -306,13 +328,19 @@ func runLocalOrRemote(ctx context.Context, deps runDeps, opts runOptions) error 
 	tmuxSession := tmux.SessionName(opts.taskID)
 	containerName := "agent-" + opts.taskID
 	startedDockerDirect := false
+	startedSandboxForeground := false
 	wrappedCommand := wrapDockerCommandWithEnvFile(envFile, invocation.Command)
 	if runtimeKind == localRuntimeMacOSSandbox {
 		sessionKind = string(localRuntimeMacOSSandbox)
 		containerName = ""
-		if err := deps.startTmux(ctx, opts.taskID, worktree, wrappedCommand); err != nil {
-			err = joinCleanup(err, "env file remove cleanup failed", deps.removeEnvFile(envFile))
-			return cleanupAfterTokenFailure(err)
+		if useTmux {
+			if err := deps.startTmux(ctx, opts.taskID, worktree, wrappedCommand); err != nil {
+				err = joinCleanup(err, "env file remove cleanup failed", deps.removeEnvFile(envFile))
+				return cleanupAfterTokenFailure(err)
+			}
+		} else {
+			tmuxSession = ""
+			startedSandboxForeground = true
 		}
 	} else if useTmux {
 		if err := deps.startTmux(ctx, opts.taskID, worktree, wrappedCommand); err != nil {
@@ -357,7 +385,9 @@ func runLocalOrRemote(ctx context.Context, deps runDeps, opts runOptions) error 
 		}
 		if runtimeKind == localRuntimeMacOSSandbox {
 			err = joinCleanup(err, "env file remove cleanup failed", deps.removeEnvFile(envFile))
-			err = joinCleanup(err, "tmux session cleanup failed", deps.stopTmux(ctx, opts.taskID))
+			if useTmux {
+				err = joinCleanup(err, "tmux session cleanup failed", deps.stopTmux(ctx, opts.taskID))
+			}
 			if repo.needsToken {
 				if revokeErr := tokenClient.RevokeProjectToken(ctx, repo.projectID, createdToken.ID); revokeErr != nil {
 					err = joinCleanup(err, "token revoke cleanup failed", revokeErr)
@@ -373,6 +403,9 @@ func runLocalOrRemote(ctx context.Context, deps runDeps, opts runOptions) error 
 
 	tokenCreated = false
 	printRunStarted(opts.out, task)
+	if startedSandboxForeground {
+		return deps.startDocker(ctx, wrappedCommand)
+	}
 	if !opts.detach {
 		if err := attachRunSession(ctx, deps, task); err != nil {
 			return err
@@ -408,9 +441,6 @@ func selectLocalRuntime(ctx context.Context, deps runDeps, useTmux bool) (localR
 	if deps.sandboxExecAvailable == nil || !deps.sandboxExecAvailable() {
 		return "", fmt.Errorf("docker is required but was not found in PATH; macOS sandbox-exec fallback is unavailable")
 	}
-	if !useTmux {
-		return "", fmt.Errorf("docker is required but was not found in PATH; macOS sandbox-exec fallback requires tmux")
-	}
 
 	confirmed, err := deps.confirmSandboxFallback(macOSSandboxFallbackPrompt())
 	if err != nil {
@@ -445,6 +475,10 @@ func printRunStarted(out io.Writer, task state.Task) {
 	_, _ = fmt.Fprintf(out, "started %s\n", task.TaskID)
 	_, _ = fmt.Fprintf(out, "runtime: %s\n", runtimeName)
 	_, _ = fmt.Fprintf(out, "workspace: %s\n", task.Worktree)
+	if task.SessionKind == string(localRuntimeMacOSSandbox) && task.TmuxSession == "" {
+		_, _ = fmt.Fprintf(out, "cleanup: agentctl cleanup %s\n", task.TaskID)
+		return
+	}
 	_, _ = fmt.Fprintf(out, "attach: agentctl attach %s\n", task.TaskID)
 	_, _ = fmt.Fprintf(out, "cleanup: agentctl cleanup %s\n", task.TaskID)
 }
@@ -1090,6 +1124,10 @@ func runRemote(ctx context.Context, deps runDeps, opts runOptions) error {
 	}
 	args = append(args, "--detach")
 	args = appendRemoteConfigArgs(args, remoteConfigPathFromConfig(cfg, opts.remoteName))
+	if len(opts.agentArgs) > 0 {
+		args = append(args, "--")
+		args = append(args, opts.agentArgs...)
+	}
 
 	return deps.forwardRemote(ctx, target, false, args...)
 }
@@ -1262,7 +1300,7 @@ func runRuntimeFor(cfg *config.Config, opts runOptions) (runRuntimeSelection, er
 
 	return runRuntimeSelection{
 		image:   template.image,
-		command: buildRunCommand(template, agent),
+		command: buildRunCommand(template, agent, opts.agentArgs),
 	}, nil
 }
 
@@ -1286,7 +1324,7 @@ func supportedRunTemplates() map[string]runTemplateSpec {
 	}
 }
 
-func buildRunCommand(template runTemplateSpec, agent string) []string {
+func buildRunCommand(template runTemplateSpec, agent string, agentArgs []string) []string {
 	lines := []string{"set -euo pipefail"}
 	if template.preflight != "" {
 		lines = append(lines, template.preflight)
@@ -1296,9 +1334,10 @@ func buildRunCommand(template runTemplateSpec, agent string) []string {
 	case "shell":
 		lines = appendInteractiveLoginShell(lines)
 	default:
+		agentCommand := shellAgentCommand(agent, agentArgs)
 		lines = append(lines,
 			fmt.Sprintf("if command -v %s >/dev/null 2>&1; then", agent),
-			fmt.Sprintf("  exec %s", agent),
+			fmt.Sprintf("  exec %s", agentCommand),
 			"fi",
 			fmt.Sprintf("printf '%%s\\n' '%s executable not found; falling back to shell' >&2", agent),
 		)
@@ -1306,6 +1345,18 @@ func buildRunCommand(template runTemplateSpec, agent string) []string {
 	}
 
 	return []string{"bash", "-c", strings.Join(lines, "\n")}
+}
+
+func shellAgentCommand(agent string, args []string) string {
+	parts := []string{agent}
+	for _, arg := range args {
+		parts = append(parts, shellQuote(arg))
+	}
+	return strings.Join(parts, " ")
+}
+
+func shellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", `'"'"'`) + "'"
 }
 
 func appendInteractiveLoginShell(lines []string) []string {

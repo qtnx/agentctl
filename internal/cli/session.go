@@ -113,6 +113,9 @@ func newSessionCommandWithDeps(use, short, remoteCommand string, remoteInteracti
 				}
 				return deps.attachContainer(cmd.Context(), task.ContainerName)
 			}
+			if task.SessionKind == string(localRuntimeMacOSSandbox) && task.TmuxSession == "" {
+				return fmt.Errorf("macOS sandbox session %q was started in the foreground and cannot be reattached", requestedTaskID)
+			}
 
 			expectedSession := tmux.SessionName(requestedTaskID)
 			if task.TmuxSession != expectedSession {

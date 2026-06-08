@@ -138,6 +138,34 @@ func TestDetachLoadsStateAndCallsTmuxDetach(t *testing.T) {
 	}
 }
 
+func TestAttachForegroundMacOSSandboxReportsNotAttachable(t *testing.T) {
+	fakes := &sessionFakes{
+		cfg: &config.Config{StateDir: "/tmp/agentctl-state"},
+		tasks: map[string]state.Task{
+			"XL-123": {
+				TaskID:      "XL-123",
+				SessionKind: "macos-sandbox",
+			},
+		},
+	}
+
+	cmd := newAttachCommandWithDeps(fakes.deps())
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"XL-123", "--config", "/tmp/config.yaml"})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("error = nil, want foreground sandbox attach error")
+	}
+	if !strings.Contains(err.Error(), "cannot be reattached") {
+		t.Fatalf("error = %v, want foreground sandbox attach message", err)
+	}
+	if len(fakes.attachCalls) != 0 || len(fakes.containerAttachCalls) != 0 {
+		t.Fatalf("attach calls tmux=%#v docker=%#v, want none", fakes.attachCalls, fakes.containerAttachCalls)
+	}
+}
+
 func TestAttachMissingStateErrorsWithoutTmuxCall(t *testing.T) {
 	missingErr := errors.New("task state missing")
 	fakes := &sessionFakes{

@@ -712,6 +712,72 @@ func TestRunPromptsAndStartsMacOSSandboxWhenDockerIsUnavailable(t *testing.T) {
 	}
 }
 
+func TestRunStartsMacOSSandboxForegroundWithoutTmux(t *testing.T) {
+	tests := []struct {
+		name          string
+		args          []string
+		tmuxAvailable bool
+	}{
+		{
+			name:          "tmux unavailable",
+			args:          []string{"XL-123", "--repo", "backend"},
+			tmuxAvailable: false,
+		},
+		{
+			name:          "no tmux flag",
+			args:          []string{"XL-123", "--repo", "backend", "--no-tmux"},
+			tmuxAvailable: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmp := t.TempDir()
+			cfg := testRunConfig(tmp)
+			fakes := newRunFakes(cfg, time.Date(2026, 6, 5, 12, 34, 56, 0, time.UTC))
+			fakes.env["GITLAB_CONTROL_PAT"] = "control-pat"
+			fakes.dockerAvailable = false
+			fakes.sandboxExecAvailable = true
+			fakes.goos = "darwin"
+			fakes.confirmSandboxFallback = true
+			fakes.tmuxAvailable = tt.tmuxAvailable
+			var out strings.Builder
+
+			cmd := newRunCommandWithDeps(fakes.deps())
+			cmd.SetOut(&out)
+			cmd.SetErr(io.Discard)
+			cmd.SetArgs(append(tt.args, "--config", filepath.Join(tmp, "config.yaml")))
+
+			if err := cmd.Execute(); err != nil {
+				t.Fatal(err)
+			}
+
+			if len(fakes.confirmSandboxFallbackPrompts) != 1 {
+				t.Fatalf("prompts = %#v, want sandbox fallback prompt", fakes.confirmSandboxFallbackPrompts)
+			}
+			if len(fakes.tmuxStarts) != 0 {
+				t.Fatalf("tmux starts = %#v, want none", fakes.tmuxStarts)
+			}
+			if len(fakes.detachedDockerStarts) != 1 {
+				t.Fatalf("foreground command starts = %#v, want one", fakes.detachedDockerStarts)
+			}
+			if !reflect.DeepEqual(fakes.detachedDockerStarts[0][5:], []string{"sandbox-exec", "-p", "profile", "--", "bash"}) {
+				t.Fatalf("foreground command = %#v, want wrapped sandbox-exec", fakes.detachedDockerStarts[0])
+			}
+			saved := fakes.savedTasks[0]
+			if saved.SessionKind != "macos-sandbox" || saved.TmuxSession != "" || saved.ContainerName != "" {
+				t.Fatalf("saved task = %#v, want foreground macos-sandbox state without tmux/container", saved)
+			}
+			if len(fakes.tmuxAttachCalls) != 0 || len(fakes.containerAttachCalls) != 0 {
+				t.Fatalf("attach calls tmux=%#v docker=%#v, want none", fakes.tmuxAttachCalls, fakes.containerAttachCalls)
+			}
+			if strings.Contains(out.String(), "attach:") {
+				t.Fatalf("output = %q, want no attach hint for foreground sandbox", out.String())
+			}
+		})
+	}
+}
+
 func TestMacOSSandboxToolReadPathsResolveNamesSymlinksAndNodePackages(t *testing.T) {
 	tmp := t.TempDir()
 	nodeBin := filepath.Join(tmp, ".n", "bin")
@@ -872,6 +938,25 @@ func TestRunTemplateNodeAgentOMPXSelectsDockerImageAndCommand(t *testing.T) {
 		t.Fatalf("docker image = %q, want node image", opts.Image)
 	}
 	assertRunCommandContains(t, opts.Command, "node --version", "command -v ompx", "exec ompx")
+}
+
+func TestRunPassesArgsToAgentExecutable(t *testing.T) {
+	tmp := t.TempDir()
+	cfg := testRunConfig(tmp)
+	fakes := newRunFakes(cfg, time.Date(2026, 6, 5, 12, 34, 56, 0, time.UTC))
+	fakes.env["GITLAB_CONTROL_PAT"] = "control-pat"
+
+	cmd := newRunCommandWithDeps(fakes.deps())
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"XL-123", "--repo", "backend", "--template", "node", "--agent", "ompx", "--", "--model", "gpt-5", "--prompt", "it's ok"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	opts := singleDockerOptions(t, fakes)
+	assertRunCommandContains(t, opts.Command, "exec ompx '--model' 'gpt-5' '--prompt' 'it'\"'\"'s ok'")
 }
 
 func TestRunTemplateNodeArbitraryAgentSelectsDockerImageAndCommand(t *testing.T) {
@@ -1421,6 +1506,8 @@ func TestRemoteRunForwardsResolvedConfigWithoutLocalServices(t *testing.T) {
 		"--config", configPath,
 		"--template", "golang",
 		"--no-tmux",
+		"--",
+		"--model", "gpt-5",
 	})
 
 	if err := cmd.Execute(); err != nil {
@@ -1450,6 +1537,9 @@ func TestRemoteRunForwardsResolvedConfigWithoutLocalServices(t *testing.T) {
 			"golang",
 			"--no-tmux",
 			"--detach",
+			"--",
+			"--model",
+			"gpt-5",
 		},
 	}
 	if !reflect.DeepEqual(fakes.remoteCalls, []runRemoteCall{wantCall}) {

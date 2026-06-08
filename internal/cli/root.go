@@ -33,12 +33,13 @@ func newRootCommandWithDeps(runDeps runDeps) *cobra.Command {
 			if !cmd.Flags().Changed("agent") {
 				return cmd.Help()
 			}
-			if len(args) > 1 {
-				return fmt.Errorf("expected at most one task id, got %d", len(args))
+			taskIDArg, agentArgs, err := parseRootAgentArgs(args, cmd.ArgsLenAtDash())
+			if err != nil {
+				return err
 			}
 			taskID := ""
-			if len(args) == 1 {
-				taskID = args[0]
+			if taskIDArg != "" {
+				taskID = taskIDArg
 			} else {
 				now := time.Now
 				if runDeps.now != nil {
@@ -51,6 +52,7 @@ func newRootCommandWithDeps(runDeps runDeps) *cobra.Command {
 				repoName:     repoName,
 				configPath:   configPath,
 				agent:        agent,
+				agentArgs:    agentArgs,
 				risk:         risk,
 				templateName: templateName,
 				remoteName:   remoteName,
@@ -87,6 +89,25 @@ func newRootCommandWithDeps(runDeps runDeps) *cobra.Command {
 	}
 
 	return cmd
+}
+
+func parseRootAgentArgs(args []string, argsLenAtDash int) (string, []string, error) {
+	switch {
+	case argsLenAtDash == 0:
+		return "", append([]string(nil), args...), nil
+	case argsLenAtDash == 1:
+		return args[0], append([]string(nil), args[1:]...), nil
+	case argsLenAtDash > 1:
+		return "", nil, fmt.Errorf("expected at most one task id before --, got %d", argsLenAtDash)
+	}
+
+	if len(args) > 1 {
+		return "", nil, fmt.Errorf("expected at most one task id, got %d", len(args))
+	}
+	if len(args) == 1 {
+		return args[0], nil, nil
+	}
+	return "", nil, nil
 }
 
 func generatedRunTaskID(agent string, now time.Time) string {
