@@ -15,6 +15,20 @@ need() {
 need curl
 need tar
 
+download() {
+  attempt=1
+  while :; do
+    if curl --fail --location --silent --show-error "$@"; then
+      return 0
+    fi
+    if [ "$attempt" -ge 3 ]; then
+      return 1
+    fi
+    attempt=$((attempt + 1))
+    sleep 2
+  done
+}
+
 os="$(uname -s | tr '[:upper:]' '[:lower:]')"
 case "$os" in
   darwin|linux) ;;
@@ -35,7 +49,7 @@ case "$arch" in
 esac
 
 if [ "$version" = "latest" ]; then
-  version="$(curl -fsSL "https://api.github.com/repos/${repo}/releases/latest" | sed -n 's/.*"tag_name":[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)"
+  version="$(download "https://api.github.com/repos/${repo}/releases/latest" | sed -n 's/.*"tag_name":[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)"
   if [ -z "$version" ]; then
     echo "could not resolve latest agentctl release" >&2
     exit 1
@@ -57,8 +71,8 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 mkdir -p "$tmp"
-curl -fsSL "${base_url}/${archive}" -o "$tmp/$archive"
-curl -fsSL "${base_url}/checksums.txt" -o "$tmp/checksums.txt"
+download "${base_url}/${archive}" -o "$tmp/$archive"
+download "${base_url}/checksums.txt" -o "$tmp/checksums.txt"
 
 expected="$(grep " ${archive}$" "$tmp/checksums.txt" | awk '{print $1}')"
 if [ -z "$expected" ]; then
