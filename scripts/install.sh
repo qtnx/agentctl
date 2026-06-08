@@ -29,6 +29,27 @@ download() {
   done
 }
 
+latest_version() {
+  if command -v gh >/dev/null 2>&1; then
+    if gh release view --repo "$repo" --json tagName --jq .tagName 2>/dev/null; then
+      return 0
+    fi
+  fi
+  download "https://api.github.com/repos/${repo}/releases/latest" | sed -n 's/.*"tag_name":[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1
+}
+
+download_release_asset() {
+  asset="$1"
+  dest="$2"
+  if command -v gh >/dev/null 2>&1; then
+    if gh release download "$version" --repo "$repo" --pattern "$asset" --output "$dest" --clobber 2>/dev/null; then
+      return 0
+    fi
+    echo "gh release download failed for $asset; falling back to curl" >&2
+  fi
+  download "${base_url}/${asset}" -o "$dest"
+}
+
 os="$(uname -s | tr '[:upper:]' '[:lower:]')"
 case "$os" in
   darwin|linux) ;;
@@ -49,7 +70,7 @@ case "$arch" in
 esac
 
 if [ "$version" = "latest" ]; then
-  version="$(download "https://api.github.com/repos/${repo}/releases/latest" | sed -n 's/.*"tag_name":[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)"
+  version="$(latest_version)"
   if [ -z "$version" ]; then
     echo "could not resolve latest agentctl release" >&2
     exit 1
@@ -71,8 +92,8 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 mkdir -p "$tmp"
-download "${base_url}/${archive}" -o "$tmp/$archive"
-download "${base_url}/checksums.txt" -o "$tmp/checksums.txt"
+download_release_asset "$archive" "$tmp/$archive"
+download_release_asset "checksums.txt" "$tmp/checksums.txt"
 
 expected="$(grep " ${archive}$" "$tmp/checksums.txt" | awk '{print $1}')"
 if [ -z "$expected" ]; then

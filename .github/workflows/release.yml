@@ -84,6 +84,7 @@ jobs:
             rm -rf "$workdir"
           done
 
+          cp scripts/install.sh dist/install.sh
           (cd dist && sha256sum *.tar.gz > checksums.txt)
 
       - name: Publish GitHub Release
@@ -100,8 +101,9 @@ jobs:
           Install or update:
 
           \`\`\`bash
-          curl -fsSL https://raw.githubusercontent.com/qtnx/agentctl/main/scripts/install.sh | sh
-          curl -fsSL https://raw.githubusercontent.com/qtnx/agentctl/main/scripts/install.sh | sh -s -- ${VERSION}
+          gh release download --repo qtnx/agentctl --pattern install.sh --output - | sh
+          gh release download ${VERSION} --repo qtnx/agentctl --pattern install.sh --output - | sh -s -- ${VERSION}
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 https://github.com/qtnx/agentctl/releases/latest/download/install.sh | sh
           \`\`\`"
 
           if gh release view "$VERSION" >/dev/null 2>&1; then

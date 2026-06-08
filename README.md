@@ -17,24 +17,30 @@ Use `agentctl` when you want a practical AI agent runner for:
 
 ## Install
 
-Install the latest `agentctl` release from GitHub:
+Install the latest `agentctl` release with GitHub CLI. This path is the most reliable when GitHub raw/release CDN returns transient 504s:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/qtnx/agentctl/main/scripts/install.sh | sh
+gh release download --repo qtnx/agentctl --pattern install.sh --output - | sh
 ```
 
 Install or update to a specific version:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/qtnx/agentctl/main/scripts/install.sh | sh -s -- v0.1.0
-curl -fsSL https://raw.githubusercontent.com/qtnx/agentctl/main/scripts/install.sh | AGENTCTL_VERSION=v0.1.0 sh
+gh release download v0.1.1 --repo qtnx/agentctl --pattern install.sh --output - | sh -s -- v0.1.1
+gh release download --repo qtnx/agentctl --pattern install.sh --output - | AGENTCTL_VERSION=v0.1.1 sh
+```
+
+Install with curl if you do not use `gh`:
+
+```bash
+curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 https://github.com/qtnx/agentctl/releases/latest/download/install.sh | sh
 ```
 
 Install with Go:
 
 ```bash
 go install github.com/qtnx/agentctl/cmd/agentctl@latest
-go install github.com/qtnx/agentctl/cmd/agentctl@v0.1.0
+go install github.com/qtnx/agentctl/cmd/agentctl@v0.1.1
 ```
 
 Build from source:
