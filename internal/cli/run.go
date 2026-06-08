@@ -29,7 +29,10 @@ import (
 
 const defaultConfigPath = "~/.config/agentctl/config.yaml"
 
-var validRunTaskIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]*$`)
+var (
+	validRunTaskIDPattern          = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]*$`)
+	validAgentExecutableNameRegexp = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+-]*$`)
+)
 
 type runTokenClient interface {
 	CreateProjectToken(ctx context.Context, projectID, name string, expiresAt time.Time) (tokenbroker.CreatedToken, error)
@@ -570,7 +573,7 @@ func agentAuthLinks(userHome func() (string, error)) []agentAuthLink {
 	}
 
 	links := []agentAuthLink{}
-	for _, name := range []string{".codex", ".claude", ".claude.json", ".omx", filepath.Join(".config", "omx")} {
+	for _, name := range []string{".codex", ".claude", ".claude.json", ".omp"} {
 		hostPath := filepath.Join(home, name)
 		if _, err := os.Lstat(hostPath); err == nil {
 			links = append(links, agentAuthLink{name: name, hostPath: hostPath})
@@ -689,7 +692,7 @@ func macOSSandboxTools(configured []string) []string {
 		"zsh",
 		"codex",
 		"claude",
-		"omx",
+		"ompx",
 		"agentctl",
 	}
 	tools = append(tools, configured...)
@@ -1253,10 +1256,8 @@ func runRuntimeFor(cfg *config.Config, opts runOptions) (runRuntimeSelection, er
 	if agent == "" {
 		agent = "codex"
 	}
-	switch agent {
-	case "codex", "claude", "omx", "shell":
-	default:
-		return runRuntimeSelection{}, fmt.Errorf("unsupported agent %q; supported agents: codex, claude, omx, shell", agent)
+	if err := validateAgentExecutableName(agent); err != nil {
+		return runRuntimeSelection{}, err
 	}
 
 	return runRuntimeSelection{
@@ -1294,28 +1295,12 @@ func buildRunCommand(template runTemplateSpec, agent string) []string {
 	switch agent {
 	case "shell":
 		lines = appendInteractiveLoginShell(lines)
-	case "codex":
+	default:
 		lines = append(lines,
-			"if command -v codex >/dev/null 2>&1; then",
-			"  exec codex",
+			fmt.Sprintf("if command -v %s >/dev/null 2>&1; then", agent),
+			fmt.Sprintf("  exec %s", agent),
 			"fi",
-			`printf '%s\n' 'codex executable not found; falling back to shell' >&2`,
-		)
-		lines = appendInteractiveLoginShell(lines)
-	case "claude":
-		lines = append(lines,
-			"if command -v claude >/dev/null 2>&1; then",
-			"  exec claude",
-			"fi",
-			`printf '%s\n' 'claude executable not found; falling back to shell' >&2`,
-		)
-		lines = appendInteractiveLoginShell(lines)
-	case "omx":
-		lines = append(lines,
-			"if command -v omx >/dev/null 2>&1; then",
-			"  exec omx",
-			"fi",
-			`printf '%s\n' 'omx executable not found; falling back to shell' >&2`,
+			fmt.Sprintf("printf '%%s\\n' '%s executable not found; falling back to shell' >&2", agent),
 		)
 		lines = appendInteractiveLoginShell(lines)
 	}
@@ -1340,6 +1325,16 @@ func validateRunTaskID(taskID string) error {
 		return fmt.Errorf("invalid task id: %q", taskID)
 	}
 
+	return nil
+}
+
+func validateAgentExecutableName(agent string) error {
+	if strings.TrimSpace(agent) == "" {
+		return fmt.Errorf("invalid agent executable name: %q", agent)
+	}
+	if !validAgentExecutableNameRegexp.MatchString(agent) {
+		return fmt.Errorf("invalid agent executable name %q: use a command name containing only letters, numbers, dot, underscore, plus, or dash", agent)
+	}
 	return nil
 }
 

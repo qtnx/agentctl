@@ -177,7 +177,7 @@ sandbox:
       - zsh
       - codex
       - claude
-      - omx
+      - ompx
       - agentctl
     env:
       GOPATH: ${TASK_HOME}/go
@@ -211,7 +211,7 @@ Fields:
 - `sandbox.macos.allow_read`: system/toolchain paths readable by strict mode. Add SDKs or custom toolchains here.
 - `sandbox.macos.allow_write`: writable paths. Special values are `workspace`, `task_home`, `state_dir`, and `tmp`.
 - `sandbox.macos.deny_read`: explicit sensitive read denials. These are useful if you later allow a broader read path.
-- `sandbox.macos.allow_tools`: executable names or paths to resolve from host `PATH` and add to the read allowlist. This covers host-installed tools such as `git`, `node`, `codex`, `claude`, `omx`, `go`, `cargo`, `zsh`, and the current `agentctl` binary. Add local SDKs or CLIs here instead of widening broad home-directory reads.
+- `sandbox.macos.allow_tools`: executable names or paths to resolve from host `PATH` and add to the read allowlist. This covers host-installed tools such as `git`, `node`, `codex`, `claude`, `ompx`, `go`, `cargo`, `zsh`, and the current `agentctl` binary. Add local SDKs or CLIs here instead of widening broad home-directory reads.
 - `sandbox.macos.env`: environment variables for sandboxed tools. `${TASK_HOME}`, `${WORKSPACE}`, `${STATE_DIR}`, and `${TMPDIR}` are expanded by the runtime.
 - `sandbox.macos.custom_rules.allow_read` and `allow_write`: extra structured path allowlists for local overrides. Raw SBPL rules are intentionally not supported by default.
 
@@ -230,10 +230,12 @@ For quick starts, the root command can run an agent directly and generate the ta
 ```bash
 agentctl --agent codex
 agentctl --agent claude
-agentctl --agent omx
+agentctl --agent ompx
 agentctl --agent claude --repo backend --detach
 agentctl --agent claude --repo backend --no-tmux
 ```
+
+`--agent <name>` accepts any safe executable name, not only built-in names. If that command exists in the selected runtime's `PATH`, `agentctl` runs it directly; otherwise it falls back to an interactive login shell. Use `--agent shell` to start the shell intentionally.
 
 Generated task ids use `<agent>-<unix-time>`, for example `claude-1780662896`. You can still pass an explicit id as an optional positional argument: `agentctl --agent claude XL-123`.
 
@@ -272,13 +274,12 @@ If `tmux` is installed, Docker starts inside tmux session `agentctl-XL-123`. Pas
 
 Docker is preferred for `untrusted` code. On macOS only, if Docker is missing but `sandbox-exec` and `tmux` are available, `agentctl run` prompts before falling back to a native macOS sandbox. The prompt explains that `sandbox-exec` is weaker than Docker: it has no container filesystem, CPU, memory, or PID isolation. The default `strict` sandbox denies reads and writes outside the configured allowlists, so it may break local toolchains until their paths are added under `sandbox.macos.allow_read` or their executable names are listed under `sandbox.macos.allow_tools`. Declining the prompt exits before creating worktrees, tokens, or state. Only the `untrusted` risk profile is currently supported.
 
-Codex, Claude, and OMX auth/config are linked into the isolated task home when they exist on the host:
+Codex, Claude, and OMPX auth/config are linked into the isolated task home when they exist on the host:
 
 - `~/.codex` -> `${TASK_HOME}/.codex`
 - `~/.claude` -> `${TASK_HOME}/.claude`
 - `~/.claude.json` -> `${TASK_HOME}/.claude.json`
-- `~/.omx` -> `${TASK_HOME}/.omx`
-- `~/.config/omx` -> `${TASK_HOME}/.config/omx`
+- `~/.omp` -> `${TASK_HOME}/.omp`
 
 For local Docker runs, the same paths are bind-mounted under `/root`. This keeps existing CLI login state working, but it also means code running in that task can access those agent credentials.
 

@@ -130,15 +130,15 @@ func TestDevLocalPromptsBeforeMacOSSandboxFallback(t *testing.T) {
 	if opts.Mode != "strict" || opts.Network {
 		t.Fatalf("sandbox opts = %#v, want strict with network disabled", opts)
 	}
-	for _, want := range []string{"/usr/local", "/company-node", "/private/var/select", "/var/select", "/var/db/xcode_select_link", "/private/var/db/xcode_select_link", "/etc/codex", "/private/etc/codex", "/repo/.git/worktrees/current", "/repo/.git", filepath.Join(hostHome, ".codex"), filepath.Join(hostHome, ".claude"), filepath.Join(hostHome, ".claude.json"), filepath.Join(hostHome, ".omx"), filepath.Join(hostHome, ".config", "omx")} {
+	for _, want := range []string{"/usr/local", "/company-node", "/private/var/select", "/var/select", "/var/db/xcode_select_link", "/private/var/db/xcode_select_link", "/etc/codex", "/private/etc/codex", "/repo/.git/worktrees/current", "/repo/.git", filepath.Join(hostHome, ".codex"), filepath.Join(hostHome, ".claude"), filepath.Join(hostHome, ".claude.json"), filepath.Join(hostHome, ".omp")} {
 		if !containsString(opts.AllowRead, want) {
 			t.Fatalf("sandbox allow read = %#v, want %q", opts.AllowRead, want)
 		}
 	}
-	if !reflect.DeepEqual(opts.AllowWrite, []string{"/repo/current", wantHome, cfg.StateDir, "/private/tmp", "/tmp", "/repo/.git/worktrees/current", "/repo/.git", filepath.Join(hostHome, ".codex"), filepath.Join(hostHome, ".claude"), filepath.Join(hostHome, ".claude.json"), filepath.Join(hostHome, ".omx"), filepath.Join(hostHome, ".config", "omx")}) {
+	if !reflect.DeepEqual(opts.AllowWrite, []string{"/repo/current", wantHome, cfg.StateDir, "/private/tmp", "/tmp", "/repo/.git/worktrees/current", "/repo/.git", filepath.Join(hostHome, ".codex"), filepath.Join(hostHome, ".claude"), filepath.Join(hostHome, ".claude.json"), filepath.Join(hostHome, ".omp")}) {
 		t.Fatalf("sandbox allow write = %#v, want resolved write paths", opts.AllowWrite)
 	}
-	for _, name := range []string{".codex", ".claude", ".claude.json", ".omx", filepath.Join(".config", "omx")} {
+	for _, name := range []string{".codex", ".claude", ".claude.json", ".omp"} {
 		link, err := os.Readlink(filepath.Join(wantHome, name))
 		if err != nil {
 			t.Fatalf("auth link %s: %v", name, err)

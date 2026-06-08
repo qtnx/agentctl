@@ -673,16 +673,16 @@ func TestRunPromptsAndStartsMacOSSandboxWhenDockerIsUnavailable(t *testing.T) {
 		t.Fatalf("sandbox opts = %#v, want strict with network disabled", sandboxOpts)
 	}
 	wantGitDir := filepath.Join(cfg.Repos["backend"].Path, ".git")
-	for _, want := range []string{"/opt/homebrew", "/company-sdk", "/private/var/select", "/var/select", "/var/db/xcode_select_link", "/private/var/db/xcode_select_link", "/etc/codex", "/private/etc/codex", wantGitDir, filepath.Join(hostHome, ".codex"), filepath.Join(hostHome, ".claude"), filepath.Join(hostHome, ".claude.json"), filepath.Join(hostHome, ".omx"), filepath.Join(hostHome, ".config", "omx")} {
+	for _, want := range []string{"/opt/homebrew", "/company-sdk", "/private/var/select", "/var/select", "/var/db/xcode_select_link", "/private/var/db/xcode_select_link", "/etc/codex", "/private/etc/codex", wantGitDir, filepath.Join(hostHome, ".codex"), filepath.Join(hostHome, ".claude"), filepath.Join(hostHome, ".claude.json"), filepath.Join(hostHome, ".omp")} {
 		if !containsString(sandboxOpts.AllowRead, want) {
 			t.Fatalf("sandbox allow read = %#v, want %q", sandboxOpts.AllowRead, want)
 		}
 	}
-	wantWrite := []string{filepath.Join(cfg.BaseDir, "XL-123"), wantHome, cfg.StateDir, "/private/tmp", "/tmp", "/custom/write", "/company-cache", wantGitDir, filepath.Join(hostHome, ".codex"), filepath.Join(hostHome, ".claude"), filepath.Join(hostHome, ".claude.json"), filepath.Join(hostHome, ".omx"), filepath.Join(hostHome, ".config", "omx")}
+	wantWrite := []string{filepath.Join(cfg.BaseDir, "XL-123"), wantHome, cfg.StateDir, "/private/tmp", "/tmp", "/custom/write", "/company-cache", wantGitDir, filepath.Join(hostHome, ".codex"), filepath.Join(hostHome, ".claude"), filepath.Join(hostHome, ".claude.json"), filepath.Join(hostHome, ".omp")}
 	if !reflect.DeepEqual(sandboxOpts.AllowWrite, wantWrite) {
 		t.Fatalf("sandbox allow write = %#v, want %#v", sandboxOpts.AllowWrite, wantWrite)
 	}
-	for _, name := range []string{".codex", ".claude", ".claude.json", ".omx", filepath.Join(".config", "omx")} {
+	for _, name := range []string{".codex", ".claude", ".claude.json", ".omp"} {
 		link, err := os.Readlink(filepath.Join(wantHome, name))
 		if err != nil {
 			t.Fatalf("auth link %s: %v", name, err)
@@ -852,7 +852,7 @@ func TestRunTemplateNodeAgentClaudeSelectsDockerImageAndCommand(t *testing.T) {
 	assertRunCommandContains(t, opts.Command, "node --version", "command -v claude", "exec claude")
 }
 
-func TestRunTemplateNodeAgentOMXSelectsDockerImageAndCommand(t *testing.T) {
+func TestRunTemplateNodeAgentOMPXSelectsDockerImageAndCommand(t *testing.T) {
 	tmp := t.TempDir()
 	cfg := testRunConfig(tmp)
 	fakes := newRunFakes(cfg, time.Date(2026, 6, 5, 12, 34, 56, 0, time.UTC))
@@ -861,7 +861,7 @@ func TestRunTemplateNodeAgentOMXSelectsDockerImageAndCommand(t *testing.T) {
 	cmd := newRunCommandWithDeps(fakes.deps())
 	cmd.SetOut(io.Discard)
 	cmd.SetErr(io.Discard)
-	cmd.SetArgs([]string{"XL-123", "--repo", "backend", "--template", "node", "--agent", "omx"})
+	cmd.SetArgs([]string{"XL-123", "--repo", "backend", "--template", "node", "--agent", "ompx"})
 
 	if err := cmd.Execute(); err != nil {
 		t.Fatal(err)
@@ -871,7 +871,29 @@ func TestRunTemplateNodeAgentOMXSelectsDockerImageAndCommand(t *testing.T) {
 	if opts.Image != "node:22-bookworm" {
 		t.Fatalf("docker image = %q, want node image", opts.Image)
 	}
-	assertRunCommandContains(t, opts.Command, "node --version", "command -v omx", "exec omx")
+	assertRunCommandContains(t, opts.Command, "node --version", "command -v ompx", "exec ompx")
+}
+
+func TestRunTemplateNodeArbitraryAgentSelectsDockerImageAndCommand(t *testing.T) {
+	tmp := t.TempDir()
+	cfg := testRunConfig(tmp)
+	fakes := newRunFakes(cfg, time.Date(2026, 6, 5, 12, 34, 56, 0, time.UTC))
+	fakes.env["GITLAB_CONTROL_PAT"] = "control-pat"
+
+	cmd := newRunCommandWithDeps(fakes.deps())
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"XL-123", "--repo", "backend", "--template", "node", "--agent", "aider"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	opts := singleDockerOptions(t, fakes)
+	if opts.Image != "node:22-bookworm" {
+		t.Fatalf("docker image = %q, want node image", opts.Image)
+	}
+	assertRunCommandContains(t, opts.Command, "node --version", "command -v aider", "exec aider")
 }
 
 func TestRunTemplateGolangAgentShellSelectsDockerImageAndCommand(t *testing.T) {
@@ -945,7 +967,7 @@ func TestRunUnsupportedTemplateErrorsBeforeSideEffects(t *testing.T) {
 	}
 }
 
-func TestRunUnsupportedAgentErrorsBeforeSideEffects(t *testing.T) {
+func TestRunInvalidAgentExecutableNameErrorsBeforeSideEffects(t *testing.T) {
 	tmp := t.TempDir()
 	cfg := testRunConfig(tmp)
 	fakes := newRunFakes(cfg, time.Date(2026, 6, 5, 12, 34, 56, 0, time.UTC))
@@ -954,14 +976,14 @@ func TestRunUnsupportedAgentErrorsBeforeSideEffects(t *testing.T) {
 	cmd := newRunCommandWithDeps(fakes.deps())
 	cmd.SetOut(io.Discard)
 	cmd.SetErr(io.Discard)
-	cmd.SetArgs([]string{"XL-123", "--repo", "backend", "--agent", "cursor"})
+	cmd.SetArgs([]string{"XL-123", "--repo", "backend", "--agent", "bad;agent"})
 
 	err := cmd.Execute()
 	if err == nil {
-		t.Fatal("error = nil, want unsupported agent")
+		t.Fatal("error = nil, want invalid agent executable name")
 	}
-	if !strings.Contains(err.Error(), `unsupported agent "cursor"`) {
-		t.Fatalf("error = %v, want unsupported agent message", err)
+	if !strings.Contains(err.Error(), `invalid agent executable name "bad;agent"`) {
+		t.Fatalf("error = %v, want invalid agent executable name message", err)
 	}
 	assertNoRunSideEffects(t, fakes)
 }
@@ -1843,7 +1865,7 @@ func createAgentAuthFixtures(t *testing.T, tmp string) string {
 	t.Helper()
 
 	home := filepath.Join(tmp, "host-home")
-	for _, name := range []string{".codex", ".claude", ".omx", filepath.Join(".config", "omx")} {
+	for _, name := range []string{".codex", ".claude", ".omp"} {
 		if err := os.MkdirAll(filepath.Join(home, name), 0700); err != nil {
 			t.Fatal(err)
 		}
@@ -1859,8 +1881,7 @@ func wantAgentAuthMounts(home string) []runtime.Mount {
 		{HostPath: filepath.Join(home, ".codex"), ContainerPath: "/root/.codex", Mode: "rw"},
 		{HostPath: filepath.Join(home, ".claude"), ContainerPath: "/root/.claude", Mode: "rw"},
 		{HostPath: filepath.Join(home, ".claude.json"), ContainerPath: "/root/.claude.json", Mode: "rw"},
-		{HostPath: filepath.Join(home, ".omx"), ContainerPath: "/root/.omx", Mode: "rw"},
-		{HostPath: filepath.Join(home, ".config", "omx"), ContainerPath: "/root/.config/omx", Mode: "rw"},
+		{HostPath: filepath.Join(home, ".omp"), ContainerPath: "/root/.omp", Mode: "rw"},
 	}
 }
 
