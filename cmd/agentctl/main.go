@@ -3,7 +3,7 @@ package main
 import (
 	"os"
 
-	"github.com/your-org/agentctl/internal/cli"
+	"github.com/qtnx/agentctl/internal/cli"
 )
 
 func main() {

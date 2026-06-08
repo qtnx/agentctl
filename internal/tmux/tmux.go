@@ -5,7 +5,7 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/your-org/agentctl/internal/execx"
+	"github.com/qtnx/agentctl/internal/execx"
 )
 
 var ErrEmptyCommand = errors.New("tmux command is empty")
@@ -28,9 +28,25 @@ func (s *Service) Start(ctx context.Context, taskID, worktree string, command []
 	}
 
 	args := []string{"new-session", "-d", "-s", SessionName(taskID), "-c", worktree}
-	args = append(args, command...)
+	args = append(args, keepOpenCommand(command)...)
 
 	return s.exec.Run(ctx, "tmux", args...)
+}
+
+func keepOpenCommand(command []string) []string {
+	script := strings.Join([]string{
+		"set +e",
+		`"$@"`,
+		"rc=$?",
+		`printf '\n[agentctl] command exited with status %s\n' "$rc"`,
+		`printf '[agentctl] tmux session kept open for inspection. Press enter to close this pane, or run agentctl cleanup from another terminal.\n'`,
+		`read -r _`,
+		`exit "$rc"`,
+	}, "\n")
+
+	args := []string{"bash", "-lc", script, "--"}
+	args = append(args, command...)
+	return args
 }
 
 func (s *Service) Attach(ctx context.Context, taskID string) error {

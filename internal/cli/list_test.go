@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/your-org/agentctl/internal/config"
-	"github.com/your-org/agentctl/internal/state"
+	"github.com/qtnx/agentctl/internal/config"
+	"github.com/qtnx/agentctl/internal/state"
 )
 
 func TestListPrintsSavedTaskFields(t *testing.T) {

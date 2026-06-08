@@ -12,19 +12,21 @@ import (
 	"testing"
 	"time"
 
-	"github.com/your-org/agentctl/internal/config"
-	"github.com/your-org/agentctl/internal/remote"
-	"github.com/your-org/agentctl/internal/runtime"
-	"github.com/your-org/agentctl/internal/state"
-	"github.com/your-org/agentctl/internal/tokenbroker"
+	"github.com/qtnx/agentctl/internal/config"
+	"github.com/qtnx/agentctl/internal/remote"
+	"github.com/qtnx/agentctl/internal/runtime"
+	"github.com/qtnx/agentctl/internal/state"
+	"github.com/qtnx/agentctl/internal/tokenbroker"
 )
 
 func TestRunStartsLocalAgentWorkspace(t *testing.T) {
 	tmp := t.TempDir()
 	cfg := testRunConfig(tmp)
+	hostHome := createAgentAuthFixtures(t, tmp)
 	now := time.Date(2026, 6, 5, 12, 34, 56, 0, time.UTC)
 	tokenValue := "glpat-created-'secret'"
 	fakes := newRunFakes(cfg, now)
+	fakes.userHome = hostHome
 	fakes.env["GITLAB_CONTROL_PAT"] = "control-pat"
 	fakes.createdToken = tokenbroker.CreatedToken{
 		ID:    "98765",
@@ -93,6 +95,9 @@ func TestRunStartsLocalAgentWorkspace(t *testing.T) {
 	}
 	if dockerOpts.Image != "node:22-bookworm" {
 		t.Fatalf("docker image = %q, want node default", dockerOpts.Image)
+	}
+	if !reflect.DeepEqual(dockerOpts.Mounts, wantAgentAuthMounts(hostHome)) {
+		t.Fatalf("docker mounts = %#v, want agent auth mounts", dockerOpts.Mounts)
 	}
 	assertRunCommandContains(t, dockerOpts.Command, "command -v codex", "exec codex")
 	if strings.Contains(strings.Join(dockerOpts.Command, "\x00"), tokenValue) {
@@ -173,6 +178,9 @@ func TestRunStartsLocalAgentWorkspace(t *testing.T) {
 	wantState := state.Task{
 		TaskID:          "XL-123",
 		Repo:            "backend",
+		RepoPath:        cfg.Repos["backend"].Path,
+		SessionKind:     "tmux",
+		WorktreeManaged: true,
 		Branch:          "agent/XL-123",
 		Worktree:        wantWorktree,
 		TmuxSession:     "agentctl-XL-123",
@@ -193,6 +201,610 @@ func TestRunStartsLocalAgentWorkspace(t *testing.T) {
 	}
 	if strings.Contains(string(stateJSON), tokenValue) {
 		t.Fatalf("saved state contains token value: %s", stateJSON)
+	}
+}
+
+func TestRunAcceptsGitLabRepoURL(t *testing.T) {
+	tmp := t.TempDir()
+	cfg := testRunConfig(tmp)
+	now := time.Date(2026, 6, 5, 12, 34, 56, 0, time.UTC)
+	fakes := newRunFakes(cfg, now)
+	fakes.env["GITLAB_CONTROL_PAT"] = "control-pat"
+
+	cmd := newRunCommandWithDeps(fakes.deps())
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{
+		"XL-123",
+		"--repo", "https://gitlab.example.com/group/backend.git",
+		"--config", filepath.Join(tmp, "config.yaml"),
+		"--agent", "shell",
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	wantRepoPath := filepath.Join(cfg.StateDir, "repos", "4b97055f-backend")
+	wantWorktree := filepath.Join(cfg.BaseDir, "XL-123")
+	if !reflect.DeepEqual(fakes.cloneCalls, []cloneRepoCall{{
+		remote:   "https://gitlab.example.com/group/backend.git",
+		repoPath: wantRepoPath,
+	}}) {
+		t.Fatalf("clone calls = %#v, want repo cache clone", fakes.cloneCalls)
+	}
+	if !reflect.DeepEqual(fakes.prepareCalls, []prepareWorktreeCall{{
+		repoPath:      wantRepoPath,
+		defaultBranch: "main",
+		taskID:        "XL-123",
+		worktree:      wantWorktree,
+	}}) {
+		t.Fatalf("prepare calls = %#v", fakes.prepareCalls)
+	}
+	tokenClient := fakes.tokenClients[0]
+	if !reflect.DeepEqual(tokenClient.createCalls, []createTokenCall{{
+		projectID: "group/backend",
+		name:      "agent-XL-123-1780662896",
+		expiresAt: now.Add(24 * time.Hour),
+	}}) {
+		t.Fatalf("create token calls = %#v", tokenClient.createCalls)
+	}
+
+	dockerOpts := singleDockerOptions(t, fakes)
+	if dockerOpts.GitDir != filepath.Join(wantRepoPath, ".git") {
+		t.Fatalf("git dir = %q, want cached repo git dir", dockerOpts.GitDir)
+	}
+
+	if len(fakes.savedTasks) != 1 {
+		t.Fatalf("saved tasks = %#v, want one", fakes.savedTasks)
+	}
+	saved := fakes.savedTasks[0]
+	if saved.Repo != "https://gitlab.example.com/group/backend.git" {
+		t.Fatalf("state repo = %q, want original URL", saved.Repo)
+	}
+	if saved.RepoPath != wantRepoPath {
+		t.Fatalf("state repo path = %q, want %q", saved.RepoPath, wantRepoPath)
+	}
+	if saved.GitLabProjectID != "group/backend" {
+		t.Fatalf("state project id = %q, want group/backend", saved.GitLabProjectID)
+	}
+}
+
+func TestRunPrintsAttachAndCleanupHintsOnSuccess(t *testing.T) {
+	tmp := t.TempDir()
+	cfg := testRunConfig(tmp)
+	fakes := newRunFakes(cfg, time.Date(2026, 6, 5, 12, 34, 56, 0, time.UTC))
+	fakes.env["GITLAB_CONTROL_PAT"] = "control-pat"
+	var out strings.Builder
+
+	cmd := newRunCommandWithDeps(fakes.deps())
+	cmd.SetOut(&out)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"XL-123", "--repo", "backend", "--config", filepath.Join(tmp, "config.yaml")})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	text := out.String()
+	for _, want := range []string{
+		"started XL-123",
+		"runtime: tmux",
+		"workspace: " + filepath.Join(cfg.BaseDir, "XL-123"),
+		"attach: agentctl attach XL-123",
+		"cleanup: agentctl cleanup XL-123",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("output = %q, want %q", text, want)
+		}
+	}
+}
+
+func TestRunAttachesTmuxByDefault(t *testing.T) {
+	tmp := t.TempDir()
+	cfg := testRunConfig(tmp)
+	fakes := newRunFakes(cfg, time.Date(2026, 6, 5, 12, 34, 56, 0, time.UTC))
+	fakes.env["GITLAB_CONTROL_PAT"] = "control-pat"
+
+	cmd := newRunCommandWithDeps(fakes.deps())
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"XL-123", "--repo", "backend", "--config", filepath.Join(tmp, "config.yaml")})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(fakes.tmuxAttachCalls, []string{"XL-123"}) {
+		t.Fatalf("tmux attach calls = %#v, want default attach", fakes.tmuxAttachCalls)
+	}
+}
+
+func TestRunDetachSkipsAutoAttach(t *testing.T) {
+	tmp := t.TempDir()
+	cfg := testRunConfig(tmp)
+	fakes := newRunFakes(cfg, time.Date(2026, 6, 5, 12, 34, 56, 0, time.UTC))
+	fakes.env["GITLAB_CONTROL_PAT"] = "control-pat"
+
+	cmd := newRunCommandWithDeps(fakes.deps())
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"XL-123", "--repo", "backend", "--config", filepath.Join(tmp, "config.yaml"), "--detach"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if len(fakes.tmuxAttachCalls) != 0 {
+		t.Fatalf("tmux attach calls = %#v, want none with --detach", fakes.tmuxAttachCalls)
+	}
+}
+
+func TestRunWithoutRepoUsesCurrentDirectoryOrigin(t *testing.T) {
+	tmp := t.TempDir()
+	cfg := testRunConfig(tmp)
+	now := time.Date(2026, 6, 5, 12, 34, 56, 0, time.UTC)
+	currentRepo := filepath.Join(tmp, "current")
+	fakes := newRunFakes(cfg, now)
+	fakes.env["GITLAB_CONTROL_PAT"] = "control-pat"
+	fakes.currentDir = currentRepo
+	fakes.originRemote = "git@gitlab.example.com:group/current.git"
+
+	cmd := newRunCommandWithDeps(fakes.deps())
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"XL-123", "--config", filepath.Join(tmp, "config.yaml"), "--agent", "shell"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	wantWorktree := filepath.Join(cfg.BaseDir, "XL-123")
+	if !reflect.DeepEqual(fakes.prepareCalls, []prepareWorktreeCall{{
+		repoPath:      currentRepo,
+		defaultBranch: "main",
+		taskID:        "XL-123",
+		worktree:      wantWorktree,
+	}}) {
+		t.Fatalf("prepare calls = %#v", fakes.prepareCalls)
+	}
+	tokenClient := fakes.tokenClients[0]
+	if tokenClient.createCalls[0].projectID != "group/current" {
+		t.Fatalf("project id = %q, want group/current", tokenClient.createCalls[0].projectID)
+	}
+	if fakes.savedTasks[0].Repo != currentRepo || fakes.savedTasks[0].RepoPath != currentRepo {
+		t.Fatalf("saved task = %#v, want current repo path", fakes.savedTasks[0])
+	}
+}
+
+func TestRunWithoutGitRepoUsesCurrentDirectoryAsPlainWorkspace(t *testing.T) {
+	tmp := t.TempDir()
+	cfg := testRunConfig(tmp)
+	now := time.Date(2026, 6, 5, 12, 34, 56, 0, time.UTC)
+	currentDir := filepath.Join(tmp, "plain")
+	fakes := newRunFakes(cfg, now)
+	fakes.currentDir = currentDir
+	fakes.originErr = errors.New("not a git repository")
+
+	cmd := newRunCommandWithDeps(fakes.deps())
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"XL-123", "--config", filepath.Join(tmp, "config.yaml"), "--agent", "shell"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(fakes.prepareCalls) != 0 {
+		t.Fatalf("prepare calls = %#v, want none", fakes.prepareCalls)
+	}
+	if len(fakes.tokenClients) != 0 {
+		t.Fatalf("token clients = %#v, want none", fakes.tokenClients)
+	}
+	dockerOpts := singleDockerOptions(t, fakes)
+	if dockerOpts.Worktree != currentDir {
+		t.Fatalf("docker worktree = %q, want current dir", dockerOpts.Worktree)
+	}
+	if dockerOpts.GitDir != "" || dockerOpts.GitLabToken != "" || dockerOpts.GitLabHost != "" {
+		t.Fatalf("docker git opts = %#v, want no git/gitlab opts", dockerOpts)
+	}
+
+	saved := fakes.savedTasks[0]
+	if saved.Repo != currentDir || saved.RepoPath != currentDir || saved.Worktree != currentDir {
+		t.Fatalf("saved task = %#v, want plain current workspace", saved)
+	}
+	if saved.WorktreeManaged || saved.GitLabProjectID != "" || saved.TokenID != "" {
+		t.Fatalf("saved task = %#v, want unmanaged workspace without token", saved)
+	}
+}
+
+func TestRunWithNonGitLabCurrentRepoUsesPlainWorkspace(t *testing.T) {
+	tmp := t.TempDir()
+	cfg := testRunConfig(tmp)
+	currentDir := filepath.Join(tmp, "github-repo")
+	fakes := newRunFakes(cfg, time.Date(2026, 6, 5, 12, 34, 56, 0, time.UTC))
+	fakes.currentDir = currentDir
+	fakes.originRemote = "git@github.com:example/backend.git"
+
+	cmd := newRunCommandWithDeps(fakes.deps())
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"XL-123", "--config", filepath.Join(tmp, "config.yaml"), "--agent", "shell"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(fakes.prepareCalls) != 0 {
+		t.Fatalf("prepare calls = %#v, want none", fakes.prepareCalls)
+	}
+	if len(fakes.tokenClients) != 0 {
+		t.Fatalf("token clients = %#v, want none", fakes.tokenClients)
+	}
+	if fakes.savedTasks[0].Worktree != currentDir || fakes.savedTasks[0].WorktreeManaged {
+		t.Fatalf("saved task = %#v, want unmanaged current directory", fakes.savedTasks[0])
+	}
+}
+
+func TestRunStartsDetachedDockerWhenTmuxIsUnavailable(t *testing.T) {
+	tmp := t.TempDir()
+	cfg := testRunConfig(tmp)
+	fakes := newRunFakes(cfg, time.Date(2026, 6, 5, 12, 34, 56, 0, time.UTC))
+	fakes.env["GITLAB_CONTROL_PAT"] = "control-pat"
+	fakes.tmuxAvailable = false
+
+	cmd := newRunCommandWithDeps(fakes.deps())
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"XL-123", "--repo", "backend", "--config", filepath.Join(tmp, "config.yaml")})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(fakes.tmuxStarts) != 0 {
+		t.Fatalf("tmux starts = %#v, want none", fakes.tmuxStarts)
+	}
+	if len(fakes.detachedDockerStarts) != 1 {
+		t.Fatalf("detached docker starts = %#v, want one", fakes.detachedDockerStarts)
+	}
+	if !singleDockerOptions(t, fakes).Detached {
+		t.Fatalf("docker options = %#v, want detached", fakes.dockerOptions)
+	}
+	if fakes.savedTasks[0].SessionKind != "docker" || fakes.savedTasks[0].TmuxSession != "" {
+		t.Fatalf("saved task = %#v, want docker session kind without tmux session", fakes.savedTasks[0])
+	}
+}
+
+func TestRunNoTmuxStartsDetachedDockerEvenWhenTmuxAvailable(t *testing.T) {
+	tmp := t.TempDir()
+	cfg := testRunConfig(tmp)
+	fakes := newRunFakes(cfg, time.Date(2026, 6, 5, 12, 34, 56, 0, time.UTC))
+	fakes.env["GITLAB_CONTROL_PAT"] = "control-pat"
+	fakes.tmuxAvailable = true
+
+	cmd := newRunCommandWithDeps(fakes.deps())
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"XL-123", "--repo", "backend", "--no-tmux", "--config", filepath.Join(tmp, "config.yaml")})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(fakes.tmuxStarts) != 0 {
+		t.Fatalf("tmux starts = %#v, want none with --no-tmux", fakes.tmuxStarts)
+	}
+	if len(fakes.detachedDockerStarts) != 1 {
+		t.Fatalf("detached docker starts = %#v, want one", fakes.detachedDockerStarts)
+	}
+	if !singleDockerOptions(t, fakes).Detached {
+		t.Fatalf("docker options = %#v, want detached", fakes.dockerOptions)
+	}
+	if fakes.savedTasks[0].SessionKind != "docker" || fakes.savedTasks[0].TmuxSession != "" {
+		t.Fatalf("saved task = %#v, want docker session kind without tmux session", fakes.savedTasks[0])
+	}
+}
+
+func TestRunErrorsBeforeSideEffectsWhenDockerIsUnavailable(t *testing.T) {
+	tmp := t.TempDir()
+	cfg := testRunConfig(tmp)
+	fakes := newRunFakes(cfg, time.Date(2026, 6, 5, 12, 34, 56, 0, time.UTC))
+	fakes.env["GITLAB_CONTROL_PAT"] = "control-pat"
+	fakes.dockerAvailable = false
+
+	cmd := newRunCommandWithDeps(fakes.deps())
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"XL-123", "--repo", "backend", "--config", filepath.Join(tmp, "config.yaml")})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("error = nil, want docker missing error")
+	}
+	if !strings.Contains(err.Error(), "docker is required") {
+		t.Fatalf("error = %v, want docker is required", err)
+	}
+	assertNoRunSideEffects(t, fakes)
+	if len(fakes.tokenClients) != 0 {
+		t.Fatalf("token clients = %#v, want none", fakes.tokenClients)
+	}
+}
+
+func TestRunErrorsBeforeSideEffectsWhenDockerDaemonIsUnavailable(t *testing.T) {
+	tmp := t.TempDir()
+	cfg := testRunConfig(tmp)
+	fakes := newRunFakes(cfg, time.Date(2026, 6, 5, 12, 34, 56, 0, time.UTC))
+	fakes.env["GITLAB_CONTROL_PAT"] = "control-pat"
+	fakes.dockerReadyErr = errors.New("cannot connect to Docker daemon")
+
+	cmd := newRunCommandWithDeps(fakes.deps())
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"XL-123", "--repo", "backend", "--config", filepath.Join(tmp, "config.yaml")})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("error = nil, want docker daemon error")
+	}
+	if !strings.Contains(err.Error(), "Docker daemon is not running or not reachable") {
+		t.Fatalf("error = %v, want daemon not reachable", err)
+	}
+	assertNoRunSideEffects(t, fakes)
+	if len(fakes.tokenClients) != 0 {
+		t.Fatalf("token clients = %#v, want none", fakes.tokenClients)
+	}
+}
+
+func TestRunRuntimeErrorDoesNotPrintUsage(t *testing.T) {
+	tmp := t.TempDir()
+	cfg := testRunConfig(tmp)
+	fakes := newRunFakes(cfg, time.Date(2026, 6, 5, 12, 34, 56, 0, time.UTC))
+	fakes.env["GITLAB_CONTROL_PAT"] = "control-pat"
+	fakes.dockerReadyErr = errors.New("cannot connect to Docker daemon")
+	var errOut strings.Builder
+
+	cmd := newRunCommandWithDeps(fakes.deps())
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(&errOut)
+	cmd.SetArgs([]string{"XL-123", "--repo", "backend", "--config", filepath.Join(tmp, "config.yaml")})
+
+	if err := cmd.Execute(); err == nil {
+		t.Fatal("error = nil, want docker daemon error")
+	}
+	if strings.Contains(errOut.String(), "Usage:") {
+		t.Fatalf("stderr = %q, want no usage for runtime error", errOut.String())
+	}
+}
+
+func TestRunPromptsMacOSSandboxWhenDockerDaemonIsUnavailable(t *testing.T) {
+	tmp := t.TempDir()
+	cfg := testRunConfig(tmp)
+	fakes := newRunFakes(cfg, time.Date(2026, 6, 5, 12, 34, 56, 0, time.UTC))
+	fakes.env["GITLAB_CONTROL_PAT"] = "control-pat"
+	fakes.dockerReadyErr = errors.New("cannot connect to Docker daemon")
+	fakes.sandboxExecAvailable = true
+	fakes.goos = "darwin"
+	fakes.confirmSandboxFallback = true
+
+	cmd := newRunCommandWithDeps(fakes.deps())
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"XL-123", "--repo", "backend", "--config", filepath.Join(tmp, "config.yaml")})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if len(fakes.confirmSandboxFallbackPrompts) != 1 {
+		t.Fatalf("prompts = %#v, want sandbox fallback prompt", fakes.confirmSandboxFallbackPrompts)
+	}
+	if len(fakes.sandboxOptions) != 1 {
+		t.Fatalf("sandbox options = %#v, want one", fakes.sandboxOptions)
+	}
+}
+
+func TestRunPromptsAndStartsMacOSSandboxWhenDockerIsUnavailable(t *testing.T) {
+	tmp := t.TempDir()
+	cfg := testRunConfig(tmp)
+	hostHome := createAgentAuthFixtures(t, tmp)
+	cfg.Sandbox.MacOS = config.MacOSSandboxConfig{
+		Mode:    "strict",
+		Network: false,
+		AllowRead: []string{
+			"/opt/homebrew",
+		},
+		AllowWrite: []string{
+			"workspace",
+			"task_home",
+			"state_dir",
+			"tmp",
+			"/custom/write",
+		},
+		DenyRead: []string{
+			"/Users/qqq/.ssh",
+		},
+		AllowTools: []string{
+			"node",
+			"codex",
+			"agentctl",
+		},
+		Env: map[string]string{
+			"GOCACHE": "${TASK_HOME}/.cache/go-build",
+		},
+		CustomRules: config.MacOSSandboxCustomRules{
+			AllowRead:  []string{"/company-sdk"},
+			AllowWrite: []string{"/company-cache"},
+		},
+	}
+	fakes := newRunFakes(cfg, time.Date(2026, 6, 5, 12, 34, 56, 0, time.UTC))
+	fakes.userHome = hostHome
+	fakes.env["GITLAB_CONTROL_PAT"] = "control-pat"
+	fakes.dockerAvailable = false
+	fakes.sandboxExecAvailable = true
+	fakes.goos = "darwin"
+	fakes.confirmSandboxFallback = true
+
+	cmd := newRunCommandWithDeps(fakes.deps())
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"XL-123", "--repo", "backend", "--config", filepath.Join(tmp, "config.yaml")})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(fakes.confirmSandboxFallbackPrompts) != 1 {
+		t.Fatalf("prompts = %#v, want one", fakes.confirmSandboxFallbackPrompts)
+	}
+	if !strings.Contains(fakes.confirmSandboxFallbackPrompts[0], "sandbox-exec") ||
+		!strings.Contains(fakes.confirmSandboxFallbackPrompts[0], "weaker than Docker") {
+		t.Fatalf("prompt = %q, want sandbox risk warning", fakes.confirmSandboxFallbackPrompts[0])
+	}
+	if len(fakes.dockerOptions) != 0 {
+		t.Fatalf("docker options = %#v, want none", fakes.dockerOptions)
+	}
+	if len(fakes.sandboxOptions) != 1 {
+		t.Fatalf("sandbox options = %#v, want one", fakes.sandboxOptions)
+	}
+	wantHome := filepath.Join(cfg.StateDir, "homes", "XL-123")
+	sandboxOpts := fakes.sandboxOptions[0]
+	if sandboxOpts.Worktree != filepath.Join(cfg.BaseDir, "XL-123") || sandboxOpts.HomeDir != wantHome {
+		t.Fatalf("sandbox opts = %#v, want worktree and isolated home", sandboxOpts)
+	}
+	if sandboxOpts.Mode != "strict" || sandboxOpts.Network {
+		t.Fatalf("sandbox opts = %#v, want strict with network disabled", sandboxOpts)
+	}
+	wantGitDir := filepath.Join(cfg.Repos["backend"].Path, ".git")
+	for _, want := range []string{"/opt/homebrew", "/company-sdk", "/private/var/select", "/var/select", "/var/db/xcode_select_link", "/private/var/db/xcode_select_link", "/etc/codex", "/private/etc/codex", wantGitDir, filepath.Join(hostHome, ".codex"), filepath.Join(hostHome, ".claude"), filepath.Join(hostHome, ".claude.json")} {
+		if !containsString(sandboxOpts.AllowRead, want) {
+			t.Fatalf("sandbox allow read = %#v, want %q", sandboxOpts.AllowRead, want)
+		}
+	}
+	wantWrite := []string{filepath.Join(cfg.BaseDir, "XL-123"), wantHome, cfg.StateDir, "/private/tmp", "/tmp", "/custom/write", "/company-cache", wantGitDir, filepath.Join(hostHome, ".codex"), filepath.Join(hostHome, ".claude"), filepath.Join(hostHome, ".claude.json")}
+	if !reflect.DeepEqual(sandboxOpts.AllowWrite, wantWrite) {
+		t.Fatalf("sandbox allow write = %#v, want %#v", sandboxOpts.AllowWrite, wantWrite)
+	}
+	for _, name := range []string{".codex", ".claude", ".claude.json"} {
+		link, err := os.Readlink(filepath.Join(wantHome, name))
+		if err != nil {
+			t.Fatalf("auth link %s: %v", name, err)
+		}
+		if want := filepath.Join(hostHome, name); link != want {
+			t.Fatalf("auth link %s = %q, want %q", name, link, want)
+		}
+	}
+	if !reflect.DeepEqual(sandboxOpts.DenyRead, []string{"/Users/qqq/.ssh"}) {
+		t.Fatalf("sandbox deny read = %#v, want configured deny paths", sandboxOpts.DenyRead)
+	}
+	if sandboxOpts.Env["GOCACHE"] != "${TASK_HOME}/.cache/go-build" {
+		t.Fatalf("sandbox env = %#v, want configured GOCACHE", sandboxOpts.Env)
+	}
+	if len(sandboxOpts.Command) < 2 || !reflect.DeepEqual(sandboxOpts.Command[:2], []string{"bash", "-c"}) {
+		t.Fatalf("sandbox command = %#v, want non-login bash -c", sandboxOpts.Command)
+	}
+	if len(fakes.tmuxStarts) != 1 {
+		t.Fatalf("tmux starts = %#v, want sandbox command in tmux", fakes.tmuxStarts)
+	}
+	if !reflect.DeepEqual(fakes.tmuxStarts[0].command[5:], []string{"sandbox-exec", "-p", "profile", "--", "bash"}) {
+		t.Fatalf("tmux command = %#v, want wrapped sandbox-exec", fakes.tmuxStarts[0].command)
+	}
+	saved := fakes.savedTasks[0]
+	if saved.SessionKind != "macos-sandbox" || saved.ContainerName != "" || saved.TmuxSession != "agentctl-XL-123" {
+		t.Fatalf("saved task = %#v, want macos-sandbox tmux state without container", saved)
+	}
+}
+
+func TestMacOSSandboxToolReadPathsResolveNamesSymlinksAndNodePackages(t *testing.T) {
+	tmp := t.TempDir()
+	nodeBin := filepath.Join(tmp, ".n", "bin")
+	codexPackage := filepath.Join(tmp, ".n", "lib", "node_modules", "@openai", "codex")
+	if err := os.MkdirAll(nodeBin, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(codexPackage, "bin"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	nodePath := filepath.Join(nodeBin, "node")
+	if err := os.WriteFile(nodePath, []byte("#!/bin/sh\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	codexTarget := filepath.Join(codexPackage, "bin", "codex.js")
+	if err := os.WriteFile(codexTarget, []byte("#!/usr/bin/env node\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	codexLink := filepath.Join(nodeBin, "codex")
+	if err := os.Symlink(codexTarget, codexLink); err != nil {
+		t.Fatal(err)
+	}
+	selfPath := filepath.Join(tmp, "bin", "agentctl")
+	if err := os.MkdirAll(filepath.Dir(selfPath), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(selfPath, []byte("agentctl"), 0700); err != nil {
+		t.Fatal(err)
+	}
+
+	got := macOSSandboxToolReadPathsWithResolvers(
+		[]string{"node", "codex", "agentctl", "missing"},
+		func(name string) (string, error) {
+			switch name {
+			case "node":
+				return nodePath, nil
+			case "codex":
+				return codexLink, nil
+			case "agentctl":
+				return "", errors.New("not in PATH")
+			default:
+				return "", errors.New("missing")
+			}
+		},
+		filepath.EvalSymlinks,
+		func() (string, error) {
+			return selfPath, nil
+		},
+	)
+	realCodexPackage, err := filepath.EvalSymlinks(codexPackage)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, want := range []string{
+		nodeBin,
+		realCodexPackage,
+		filepath.Dir(selfPath),
+	} {
+		if !containsString(got, want) {
+			t.Fatalf("tool read paths = %#v, want %q", got, want)
+		}
+	}
+}
+
+func TestRunDeclinesMacOSSandboxFallbackBeforeSideEffects(t *testing.T) {
+	tmp := t.TempDir()
+	cfg := testRunConfig(tmp)
+	fakes := newRunFakes(cfg, time.Date(2026, 6, 5, 12, 34, 56, 0, time.UTC))
+	fakes.env["GITLAB_CONTROL_PAT"] = "control-pat"
+	fakes.dockerAvailable = false
+	fakes.sandboxExecAvailable = true
+	fakes.goos = "darwin"
+	fakes.confirmSandboxFallback = false
+
+	cmd := newRunCommandWithDeps(fakes.deps())
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"XL-123", "--repo", "backend", "--config", filepath.Join(tmp, "config.yaml")})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("error = nil, want declined sandbox fallback")
+	}
+	if !strings.Contains(err.Error(), "sandbox-exec fallback declined") {
+		t.Fatalf("error = %v, want declined fallback", err)
+	}
+	if len(fakes.confirmSandboxFallbackPrompts) != 1 {
+		t.Fatalf("prompts = %#v, want one", fakes.confirmSandboxFallbackPrompts)
+	}
+	assertNoRunSideEffects(t, fakes)
+	if len(fakes.tokenClients) != 0 || len(fakes.sandboxOptions) != 0 {
+		t.Fatalf("token clients = %#v sandbox options = %#v, want none", fakes.tokenClients, fakes.sandboxOptions)
 	}
 }
 
@@ -218,6 +830,28 @@ func TestRunTemplateNodeAgentCodexSelectsDockerImageAndCommand(t *testing.T) {
 	assertRunCommandContains(t, opts.Command, "node --version", "command -v codex", "exec codex")
 }
 
+func TestRunTemplateNodeAgentClaudeSelectsDockerImageAndCommand(t *testing.T) {
+	tmp := t.TempDir()
+	cfg := testRunConfig(tmp)
+	fakes := newRunFakes(cfg, time.Date(2026, 6, 5, 12, 34, 56, 0, time.UTC))
+	fakes.env["GITLAB_CONTROL_PAT"] = "control-pat"
+
+	cmd := newRunCommandWithDeps(fakes.deps())
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"XL-123", "--repo", "backend", "--template", "node", "--agent", "claude"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	opts := singleDockerOptions(t, fakes)
+	if opts.Image != "node:22-bookworm" {
+		t.Fatalf("docker image = %q, want node image", opts.Image)
+	}
+	assertRunCommandContains(t, opts.Command, "node --version", "command -v claude", "exec claude")
+}
+
 func TestRunTemplateGolangAgentShellSelectsDockerImageAndCommand(t *testing.T) {
 	tmp := t.TempDir()
 	cfg := testRunConfig(tmp)
@@ -237,7 +871,7 @@ func TestRunTemplateGolangAgentShellSelectsDockerImageAndCommand(t *testing.T) {
 	if opts.Image != "golang:1.22-bookworm" {
 		t.Fatalf("docker image = %q, want golang image", opts.Image)
 	}
-	assertRunCommandContains(t, opts.Command, "go version", "exec bash")
+	assertRunCommandContains(t, opts.Command, "go version", "exec zsh -l", "exec bash -l")
 }
 
 func TestRunEmptyTemplateUsesConfigDefault(t *testing.T) {
@@ -742,6 +1376,7 @@ func TestRemoteRunForwardsResolvedConfigWithoutLocalServices(t *testing.T) {
 		"--remote", "buildbox-1",
 		"--config", configPath,
 		"--template", "golang",
+		"--no-tmux",
 	})
 
 	if err := cmd.Execute(); err != nil {
@@ -769,6 +1404,8 @@ func TestRemoteRunForwardsResolvedConfigWithoutLocalServices(t *testing.T) {
 			"untrusted",
 			"--template",
 			"golang",
+			"--no-tmux",
+			"--detach",
 		},
 	}
 	if !reflect.DeepEqual(fakes.remoteCalls, []runRemoteCall{wantCall}) {
@@ -825,6 +1462,7 @@ func TestRemoteRunForwardsConfiguredRemoteConfigPath(t *testing.T) {
 			"codex",
 			"--risk",
 			"untrusted",
+			"--detach",
 			"--config",
 			"/etc/agentctl/config.yaml",
 		},
@@ -881,37 +1519,56 @@ func testRunConfig(tmp string) *config.Config {
 }
 
 type runFakes struct {
-	cfg                 *config.Config
-	now                 time.Time
-	env                 map[string]string
-	loadConfigCalls     int
-	loadConfigPaths     []string
-	prepareCalls        []prepareWorktreeCall
-	removeWorktreeCalls []removeWorktreeCall
-	tokenClients        []*fakeRunTokenClient
-	createdToken        tokenbroker.CreatedToken
-	createTokenErr      error
-	dockerOptions       []runtime.DockerOptions
-	dockerErr           error
-	tmuxStarts          []tmuxStartCall
-	tmuxStops           []string
-	tmuxErr             error
-	stopTmuxErr         error
-	saveErr             error
-	revokeErr           error
-	removeWorktreeErr   error
-	removeEnvErr        error
-	removeEnvCalls      []string
-	savedTasks          []state.Task
-	remoteCalls         []runRemoteCall
-	remoteErr           error
+	cfg                           *config.Config
+	now                           time.Time
+	env                           map[string]string
+	loadConfigCalls               int
+	loadConfigPaths               []string
+	currentDir                    string
+	userHome                      string
+	originRemote                  string
+	originErr                     error
+	goos                          string
+	dockerAvailable               bool
+	dockerReadyErr                error
+	sandboxExecAvailable          bool
+	confirmSandboxFallback        bool
+	confirmSandboxFallbackPrompts []string
+	tmuxAvailable                 bool
+	cloneCalls                    []cloneRepoCall
+	prepareCalls                  []prepareWorktreeCall
+	removeWorktreeCalls           []removeWorktreeCall
+	tokenClients                  []*fakeRunTokenClient
+	createdToken                  tokenbroker.CreatedToken
+	createTokenErr                error
+	dockerOptions                 []runtime.DockerOptions
+	sandboxOptions                []runtime.MacOSSandboxOptions
+	dockerErr                     error
+	tmuxStarts                    []tmuxStartCall
+	tmuxAttachCalls               []string
+	containerAttachCalls          []string
+	detachedDockerStarts          [][]string
+	tmuxStops                     []string
+	tmuxErr                       error
+	stopTmuxErr                   error
+	saveErr                       error
+	revokeErr                     error
+	removeWorktreeErr             error
+	removeEnvErr                  error
+	removeEnvCalls                []string
+	savedTasks                    []state.Task
+	remoteCalls                   []runRemoteCall
+	remoteErr                     error
 }
 
 func newRunFakes(cfg *config.Config, now time.Time) *runFakes {
 	return &runFakes{
-		cfg: cfg,
-		now: now,
-		env: map[string]string{},
+		cfg:             cfg,
+		now:             now,
+		env:             map[string]string{},
+		goos:            "linux",
+		dockerAvailable: true,
+		tmuxAvailable:   true,
 		createdToken: tokenbroker.CreatedToken{
 			ID:    "98765",
 			Token: "glpat-created-secret",
@@ -932,6 +1589,37 @@ func (f *runFakes) deps() runDeps {
 		},
 		now: func() time.Time {
 			return f.now
+		},
+		workingDir: func() (string, error) {
+			if f.currentDir == "" {
+				return "/current/repo", nil
+			}
+			return f.currentDir, nil
+		},
+		userHome: func() (string, error) {
+			if f.userHome == "" {
+				return os.UserHomeDir()
+			}
+			return f.userHome, nil
+		},
+		originRemote: func(_ context.Context, repoPath string) (string, error) {
+			if f.originErr != nil {
+				return "", f.originErr
+			}
+			if f.originRemote == "" {
+				return "git@gitlab.example.com:example-group/backend.git", nil
+			}
+			return f.originRemote, nil
+		},
+		gitMetadataPaths: func(_ context.Context, _ string) []string {
+			return nil
+		},
+		ensureRepoClone: func(_ context.Context, remote, repoPath string) error {
+			f.cloneCalls = append(f.cloneCalls, cloneRepoCall{
+				remote:   remote,
+				repoPath: repoPath,
+			})
+			return nil
 		},
 		prepareWorktree: func(_ context.Context, repoPath, defaultBranch, taskID, worktree string) error {
 			f.prepareCalls = append(f.prepareCalls, prepareWorktreeCall{
@@ -973,6 +1661,32 @@ func (f *runFakes) deps() runDeps {
 				},
 			}, nil
 		},
+		dockerAvailable: func() bool {
+			return f.dockerAvailable
+		},
+		dockerReady: func(_ context.Context) error {
+			return f.dockerReadyErr
+		},
+		goos: func() string {
+			return f.goos
+		},
+		sandboxExecAvailable: func() bool {
+			return f.sandboxExecAvailable
+		},
+		confirmSandboxFallback: func(prompt string) (bool, error) {
+			f.confirmSandboxFallbackPrompts = append(f.confirmSandboxFallbackPrompts, prompt)
+			return f.confirmSandboxFallback, nil
+		},
+		macOSSandboxInvocationFor: func(opts runtime.MacOSSandboxOptions) (runtime.DockerInvocation, error) {
+			f.sandboxOptions = append(f.sandboxOptions, opts)
+			return runtime.DockerInvocation{
+				Command: []string{"sandbox-exec", "-p", "profile", "--", "bash"},
+				Env: []string{
+					"GITLAB_HOST=gitlab.example.com",
+					"GITLAB_TOKEN=glpat-created-secret",
+				},
+			}, nil
+		},
 		startTmux: func(_ context.Context, taskID, worktree string, command []string) error {
 			f.tmuxStarts = append(f.tmuxStarts, tmuxStartCall{
 				taskID:   taskID,
@@ -980,6 +1694,21 @@ func (f *runFakes) deps() runDeps {
 				command:  append([]string(nil), command...),
 			})
 			return f.tmuxErr
+		},
+		attachTmux: func(_ context.Context, taskID string) error {
+			f.tmuxAttachCalls = append(f.tmuxAttachCalls, taskID)
+			return nil
+		},
+		tmuxAvailable: func() bool {
+			return f.tmuxAvailable
+		},
+		startDocker: func(_ context.Context, command []string) error {
+			f.detachedDockerStarts = append(f.detachedDockerStarts, append([]string(nil), command...))
+			return nil
+		},
+		attachDocker: func(_ context.Context, containerName string) error {
+			f.containerAttachCalls = append(f.containerAttachCalls, containerName)
+			return nil
 		},
 		stopTmux: func(_ context.Context, taskID string) error {
 			f.tmuxStops = append(f.tmuxStops, taskID)
@@ -1077,6 +1806,43 @@ type prepareWorktreeCall struct {
 type removeWorktreeCall struct {
 	repoPath string
 	worktree string
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
+func createAgentAuthFixtures(t *testing.T, tmp string) string {
+	t.Helper()
+
+	home := filepath.Join(tmp, "host-home")
+	for _, name := range []string{".codex", ".claude"} {
+		if err := os.MkdirAll(filepath.Join(home, name), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(home, ".claude.json"), []byte("{}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	return home
+}
+
+func wantAgentAuthMounts(home string) []runtime.Mount {
+	return []runtime.Mount{
+		{HostPath: filepath.Join(home, ".codex"), ContainerPath: "/root/.codex", Mode: "rw"},
+		{HostPath: filepath.Join(home, ".claude"), ContainerPath: "/root/.claude", Mode: "rw"},
+		{HostPath: filepath.Join(home, ".claude.json"), ContainerPath: "/root/.claude.json", Mode: "rw"},
+	}
+}
+
+type cloneRepoCall struct {
+	remote   string
+	repoPath string
 }
 
 type createTokenCall struct {

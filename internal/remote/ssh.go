@@ -6,7 +6,7 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/your-org/agentctl/internal/execx"
+	"github.com/qtnx/agentctl/internal/execx"
 )
 
 type Target struct {

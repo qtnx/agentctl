@@ -20,3 +20,7 @@ func (LocalExecutor) Run(ctx context.Context, name string, args ...string) error
 
 	return cmd.Run()
 }
+
+func (LocalExecutor) Output(ctx context.Context, name string, args ...string) ([]byte, error) {
+	return exec.CommandContext(ctx, name, args...).Output()
+}

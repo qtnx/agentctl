@@ -10,10 +10,10 @@ import (
 	"strings"
 	"testing"
 
-	cleanuppkg "github.com/your-org/agentctl/internal/cleanup"
-	"github.com/your-org/agentctl/internal/config"
-	"github.com/your-org/agentctl/internal/remote"
-	"github.com/your-org/agentctl/internal/state"
+	cleanuppkg "github.com/qtnx/agentctl/internal/cleanup"
+	"github.com/qtnx/agentctl/internal/config"
+	"github.com/qtnx/agentctl/internal/remote"
+	"github.com/qtnx/agentctl/internal/state"
 )
 
 func TestCleanupLoadsConfigStateAndCallsCleanupService(t *testing.T) {
@@ -172,6 +172,43 @@ func TestCleanupMissingRepoInConfigSurfacesAndStillCallsCleanupService(t *testin
 	}
 	if req.RepoLookupError == nil {
 		t.Fatal("repo lookup error = nil, want missing repo error")
+	}
+}
+
+func TestCleanupUsesRepoPathFromStateWhenRepoIsURL(t *testing.T) {
+	cfg := testCleanupConfig(t.TempDir())
+	cfg.Repos = map[string]config.Repo{}
+	task := cleanupCLITestTask()
+	task.Repo = "https://gitlab.config.example.com/group/backend.git"
+	task.RepoPath = filepath.Join(cfg.StateDir, "repos", "4b97055f-backend")
+	task.Worktree = filepath.Join(cfg.BaseDir, "XL-123")
+	task.GitLabProjectID = "group/backend"
+	fakes := &cleanupCLIFakes{
+		cfg:  cfg,
+		task: task,
+		env:  map[string]string{},
+	}
+
+	cmd := newCleanupCommandWithDeps(fakes.deps())
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"XL-123", "--config", "/tmp/config.yaml"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if len(fakes.cleanupCalls) != 1 {
+		t.Fatalf("cleanup calls = %#v, want one", fakes.cleanupCalls)
+	}
+	req := fakes.cleanupCalls[0]
+	if req.RepoPath != task.RepoPath {
+		t.Fatalf("repo path = %q, want %q", req.RepoPath, task.RepoPath)
+	}
+	if req.RepoLookupError != nil {
+		t.Fatalf("repo lookup error = %v, want nil", req.RepoLookupError)
+	}
+	if req.Task.GitLabProjectID != "group/backend" {
+		t.Fatalf("project id = %q, want group/backend", req.Task.GitLabProjectID)
 	}
 }
 

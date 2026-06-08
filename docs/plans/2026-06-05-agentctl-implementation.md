@@ -53,7 +53,7 @@ Expected: FAIL because no module or CLI package exists.
 Create `go.mod`:
 
 ```go
-module github.com/your-org/agentctl
+module github.com/qtnx/agentctl
 
 go 1.22
 
@@ -68,7 +68,7 @@ package main
 import (
 	"os"
 
-	"github.com/your-org/agentctl/internal/cli"
+	"github.com/qtnx/agentctl/internal/cli"
 )
 
 func main() {

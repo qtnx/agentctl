@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/your-org/agentctl/internal/state"
+	"github.com/qtnx/agentctl/internal/state"
 )
 
 // ErrAlreadyRemoved marks cleanup targets that are already gone and safe to treat as cleaned.
@@ -55,32 +55,38 @@ func (s *Service) Cleanup(ctx context.Context, req Request) error {
 		}
 	}
 
-	expectedContainerName := "agent-" + req.TaskID
-	if req.Task.ContainerName != expectedContainerName {
-		errs = append(errs, fmt.Errorf("docker container cleanup failed: state container name %q does not match expected %q", req.Task.ContainerName, expectedContainerName))
-	} else if err := s.deps.RemoveContainer(ctx, req.Task.ContainerName); err != nil {
-		if !errors.Is(err, ErrAlreadyRemoved) {
-			errs = append(errs, fmt.Errorf("docker container cleanup failed: %w", err))
+	if shouldRemoveContainer(req.Task) {
+		expectedContainerName := "agent-" + req.TaskID
+		if req.Task.ContainerName != expectedContainerName {
+			errs = append(errs, fmt.Errorf("docker container cleanup failed: state container name %q does not match expected %q", req.Task.ContainerName, expectedContainerName))
+		} else if err := s.deps.RemoveContainer(ctx, req.Task.ContainerName); err != nil {
+			if !errors.Is(err, ErrAlreadyRemoved) {
+				errs = append(errs, fmt.Errorf("docker container cleanup failed: %w", err))
+			}
 		}
 	}
 
-	if strings.TrimSpace(req.Task.TmuxSession) == "" || req.Task.TmuxSession != req.ExpectedTmuxSession {
-		errs = append(errs, fmt.Errorf("tmux session cleanup failed: state tmux session %q does not match expected %q", req.Task.TmuxSession, req.ExpectedTmuxSession))
-	} else if err := s.deps.KillSession(ctx, req.TaskID); err != nil {
-		if !errors.Is(err, ErrAlreadyRemoved) {
-			errs = append(errs, fmt.Errorf("tmux session cleanup failed: %w", err))
+	if req.Task.SessionKind != "docker" {
+		if strings.TrimSpace(req.Task.TmuxSession) == "" || req.Task.TmuxSession != req.ExpectedTmuxSession {
+			errs = append(errs, fmt.Errorf("tmux session cleanup failed: state tmux session %q does not match expected %q", req.Task.TmuxSession, req.ExpectedTmuxSession))
+		} else if err := s.deps.KillSession(ctx, req.TaskID); err != nil {
+			if !errors.Is(err, ErrAlreadyRemoved) {
+				errs = append(errs, fmt.Errorf("tmux session cleanup failed: %w", err))
+			}
 		}
 	}
 
-	if strings.TrimSpace(req.Task.Worktree) == "" || req.Task.Worktree != req.ExpectedWorktree {
-		errs = append(errs, fmt.Errorf("git worktree cleanup failed: state worktree %q does not match expected %q", req.Task.Worktree, req.ExpectedWorktree))
-	} else if req.RepoLookupError != nil {
-		errs = append(errs, fmt.Errorf("git worktree cleanup failed: %w", req.RepoLookupError))
-	} else if strings.TrimSpace(req.RepoPath) == "" {
-		errs = append(errs, fmt.Errorf("git worktree cleanup failed: repo path is required"))
-	} else if err := s.deps.RemoveWorktree(ctx, req.RepoPath, req.Task.Worktree); err != nil {
-		if !errors.Is(err, ErrAlreadyRemoved) {
-			errs = append(errs, fmt.Errorf("git worktree cleanup failed: %w", err))
+	if shouldRemoveWorktree(req.Task) {
+		if strings.TrimSpace(req.Task.Worktree) == "" || req.Task.Worktree != req.ExpectedWorktree {
+			errs = append(errs, fmt.Errorf("git worktree cleanup failed: state worktree %q does not match expected %q", req.Task.Worktree, req.ExpectedWorktree))
+		} else if req.RepoLookupError != nil {
+			errs = append(errs, fmt.Errorf("git worktree cleanup failed: %w", req.RepoLookupError))
+		} else if strings.TrimSpace(req.RepoPath) == "" {
+			errs = append(errs, fmt.Errorf("git worktree cleanup failed: repo path is required"))
+		} else if err := s.deps.RemoveWorktree(ctx, req.RepoPath, req.Task.Worktree); err != nil {
+			if !errors.Is(err, ErrAlreadyRemoved) {
+				errs = append(errs, fmt.Errorf("git worktree cleanup failed: %w", err))
+			}
 		}
 	}
 
@@ -93,4 +99,18 @@ func (s *Service) Cleanup(ctx context.Context, req Request) error {
 	}
 
 	return nil
+}
+
+func shouldRemoveWorktree(task state.Task) bool {
+	if task.WorktreeManaged || strings.TrimSpace(task.Branch) != "" {
+		return true
+	}
+	if strings.TrimSpace(task.Worktree) != "" && strings.TrimSpace(task.RepoPath) != "" && task.Worktree == task.RepoPath {
+		return false
+	}
+	return true
+}
+
+func shouldRemoveContainer(task state.Task) bool {
+	return task.SessionKind != "macos-sandbox"
 }

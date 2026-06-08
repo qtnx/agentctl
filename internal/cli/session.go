@@ -4,20 +4,21 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/qtnx/agentctl/internal/config"
+	"github.com/qtnx/agentctl/internal/execx"
+	"github.com/qtnx/agentctl/internal/remote"
+	"github.com/qtnx/agentctl/internal/state"
+	"github.com/qtnx/agentctl/internal/tmux"
 	"github.com/spf13/cobra"
-	"github.com/your-org/agentctl/internal/config"
-	"github.com/your-org/agentctl/internal/execx"
-	"github.com/your-org/agentctl/internal/remote"
-	"github.com/your-org/agentctl/internal/state"
-	"github.com/your-org/agentctl/internal/tmux"
 )
 
 type sessionDeps struct {
-	loadConfig    func(path string) (*config.Config, error)
-	loadTask      func(stateDir, taskID string) (state.Task, error)
-	attach        func(ctx context.Context, taskID string) error
-	detach        func(ctx context.Context, taskID string) error
-	forwardRemote func(ctx context.Context, target remote.Target, interactive bool, args ...string) error
+	loadConfig      func(path string) (*config.Config, error)
+	loadTask        func(stateDir, taskID string) (state.Task, error)
+	attach          func(ctx context.Context, taskID string) error
+	detach          func(ctx context.Context, taskID string) error
+	attachContainer func(ctx context.Context, containerName string) error
+	forwardRemote   func(ctx context.Context, target remote.Target, interactive bool, args ...string) error
 }
 
 func newShellCommand() *cobra.Command {
@@ -42,8 +43,11 @@ func defaultSessionDeps() sessionDeps {
 		loadTask: func(stateDir, taskID string) (state.Task, error) {
 			return state.NewStore(stateDir).Load(taskID)
 		},
-		attach:        tmuxService.Attach,
-		detach:        tmuxService.Detach,
+		attach: tmuxService.Attach,
+		detach: tmuxService.Detach,
+		attachContainer: func(ctx context.Context, containerName string) error {
+			return localExec.Run(ctx, "docker", "attach", containerName)
+		},
 		forwardRemote: remoteService.Run,
 	}
 }
@@ -99,6 +103,17 @@ func newSessionCommandWithDeps(use, short, remoteCommand string, remoteInteracti
 			if task.TaskID != "" && task.TaskID != requestedTaskID {
 				return fmt.Errorf("state task id %q does not match requested task id %q", task.TaskID, requestedTaskID)
 			}
+			if task.SessionKind == "docker" {
+				if remoteCommand == "detach" {
+					return fmt.Errorf("docker sessions detach from the attached terminal with Ctrl-p Ctrl-q")
+				}
+				expectedContainer := "agent-" + requestedTaskID
+				if task.ContainerName != expectedContainer {
+					return fmt.Errorf("state container name %q does not match expected %q", task.ContainerName, expectedContainer)
+				}
+				return deps.attachContainer(cmd.Context(), task.ContainerName)
+			}
+
 			expectedSession := tmux.SessionName(requestedTaskID)
 			if task.TmuxSession != expectedSession {
 				return fmt.Errorf("state tmux session %q does not match expected %q", task.TmuxSession, expectedSession)

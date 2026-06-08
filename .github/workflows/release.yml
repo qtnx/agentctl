@@ -1,0 +1,108 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version, for example v0.1.0"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and publish release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Resolve version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            version="${{ github.event.inputs.version }}"
+          else
+            version="${GITHUB_REF_NAME}"
+          fi
+          if [[ ! "$version" =~ ^v[0-9]+(\.[0-9]+){0,2}([-.][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Invalid version: $version" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Test
+        run: go test ./...
+
+      - name: Build release artifacts
+        shell: bash
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          build_date="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          commit="${GITHUB_SHA}"
+          ldflags="-s -w -X github.com/qtnx/agentctl/internal/version.Version=${VERSION} -X github.com/qtnx/agentctl/internal/version.Commit=${commit} -X github.com/qtnx/agentctl/internal/version.Date=${build_date}"
+
+          targets=(
+            "darwin amd64"
+            "darwin arm64"
+            "linux amd64"
+            "linux arm64"
+            "windows amd64"
+            "windows arm64"
+          )
+
+          for target in "${targets[@]}"; do
+            read -r goos goarch <<< "$target"
+            ext=""
+            if [ "$goos" = "windows" ]; then
+              ext=".exe"
+            fi
+            workdir="dist/agentctl_${VERSION}_${goos}_${goarch}"
+            mkdir -p "$workdir"
+            CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" go build -trimpath -ldflags "$ldflags" -o "$workdir/agentctl${ext}" ./cmd/agentctl
+            cp README.md "$workdir/README.md"
+            tar -C dist -czf "dist/agentctl_${VERSION}_${goos}_${goarch}.tar.gz" "agentctl_${VERSION}_${goos}_${goarch}"
+            rm -rf "$workdir"
+          done
+
+          (cd dist && sha256sum *.tar.gz > checksums.txt)
+
+      - name: Publish GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          notes="agentctl ${VERSION}
+
+          Isolated AI coding agent workspaces for Codex, Claude Code, Docker, git worktrees, GitLab token isolation, and remote devboxes.
+
+          Install or update:
+
+          \`\`\`bash
+          curl -fsSL https://raw.githubusercontent.com/qtnx/agentctl/main/scripts/install.sh | sh
+          curl -fsSL https://raw.githubusercontent.com/qtnx/agentctl/main/scripts/install.sh | sh -s -- ${VERSION}
+          \`\`\`"
+
+          if gh release view "$VERSION" >/dev/null 2>&1; then
+            gh release upload "$VERSION" dist/* --clobber
+          else
+            gh release create "$VERSION" dist/* --title "agentctl ${VERSION}" --notes "$notes"
+          fi

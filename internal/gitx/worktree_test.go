@@ -3,6 +3,8 @@ package gitx
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 )
@@ -51,6 +53,41 @@ func TestPrepareWorktreeRunsFetchThenWorktreeAdd(t *testing.T) {
 	}
 	if !reflect.DeepEqual(exec.calls, want) {
 		t.Fatalf("commands = %#v, want %#v", exec.calls, want)
+	}
+}
+
+func TestEnsureRepoCloneClonesWhenCacheIsMissing(t *testing.T) {
+	exec := &fakeExecutor{}
+	service := NewService(exec)
+	repoPath := filepath.Join(t.TempDir(), "repos", "cache-backend")
+
+	if err := service.EnsureRepoClone(context.Background(), "https://gitlab.example.com/group/backend.git", repoPath); err != nil {
+		t.Fatal(err)
+	}
+
+	want := []recordedCommand{{
+		name: "git",
+		args: []string{"clone", "https://gitlab.example.com/group/backend.git", repoPath},
+	}}
+	if !reflect.DeepEqual(exec.calls, want) {
+		t.Fatalf("commands = %#v, want %#v", exec.calls, want)
+	}
+}
+
+func TestEnsureRepoCloneSkipsExistingGitCache(t *testing.T) {
+	exec := &fakeExecutor{}
+	service := NewService(exec)
+	repoPath := filepath.Join(t.TempDir(), "repos", "cache-backend")
+	if err := os.MkdirAll(filepath.Join(repoPath, ".git"), 0700); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := service.EnsureRepoClone(context.Background(), "https://gitlab.example.com/group/backend.git", repoPath); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(exec.calls) != 0 {
+		t.Fatalf("commands = %#v, want none", exec.calls)
 	}
 }
 

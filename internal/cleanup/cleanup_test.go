@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/your-org/agentctl/internal/state"
+	"github.com/qtnx/agentctl/internal/state"
 )
 
 func TestCleanupRunsStepsInOrderAndDeletesStateWhenAllSucceed(t *testing.T) {
@@ -34,6 +34,104 @@ func TestCleanupRunsStepsInOrderAndDeletesStateWhenAllSucceed(t *testing.T) {
 		{step: "container", containerName: "agent-XL-123"},
 		{step: "tmux", taskID: "XL-123"},
 		{step: "worktree", repoPath: "/repo/backend", worktree: "/worktrees/XL-123"},
+		{step: "delete", taskID: "XL-123"},
+	}
+	if !reflect.DeepEqual(fakes.calls, want) {
+		t.Fatalf("calls = %#v, want %#v", fakes.calls, want)
+	}
+}
+
+func TestCleanupSkipsTmuxForDockerSession(t *testing.T) {
+	fakes := &cleanupFakes{}
+	service := NewService(fakes.deps())
+	task := cleanupTestTask()
+	task.SessionKind = "docker"
+	task.TmuxSession = ""
+
+	err := service.Cleanup(context.Background(), Request{
+		TaskID:              "XL-123",
+		Task:                task,
+		RepoPath:            "/repo/backend",
+		StateDir:            "/state",
+		GitLabBaseURL:       "https://gitlab.example.com",
+		ControlPAT:          "control-pat",
+		ExpectedTmuxSession: "agentctl-XL-123",
+		ExpectedWorktree:    "/worktrees/XL-123",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	want := []cleanupCall{
+		{step: "revoke", baseURL: "https://gitlab.example.com", controlPAT: "control-pat", projectID: "123", tokenID: "98765"},
+		{step: "container", containerName: "agent-XL-123"},
+		{step: "worktree", repoPath: "/repo/backend", worktree: "/worktrees/XL-123"},
+		{step: "delete", taskID: "XL-123"},
+	}
+	if !reflect.DeepEqual(fakes.calls, want) {
+		t.Fatalf("calls = %#v, want %#v", fakes.calls, want)
+	}
+}
+
+func TestCleanupSkipsContainerForMacOSSandboxSession(t *testing.T) {
+	fakes := &cleanupFakes{}
+	service := NewService(fakes.deps())
+	task := cleanupTestTask()
+	task.SessionKind = "macos-sandbox"
+	task.ContainerName = ""
+
+	err := service.Cleanup(context.Background(), Request{
+		TaskID:              "XL-123",
+		Task:                task,
+		RepoPath:            "/repo/backend",
+		StateDir:            "/state",
+		GitLabBaseURL:       "https://gitlab.example.com",
+		ControlPAT:          "control-pat",
+		ExpectedTmuxSession: "agentctl-XL-123",
+		ExpectedWorktree:    "/worktrees/XL-123",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	want := []cleanupCall{
+		{step: "revoke", baseURL: "https://gitlab.example.com", controlPAT: "control-pat", projectID: "123", tokenID: "98765"},
+		{step: "tmux", taskID: "XL-123"},
+		{step: "worktree", repoPath: "/repo/backend", worktree: "/worktrees/XL-123"},
+		{step: "delete", taskID: "XL-123"},
+	}
+	if !reflect.DeepEqual(fakes.calls, want) {
+		t.Fatalf("calls = %#v, want %#v", fakes.calls, want)
+	}
+}
+
+func TestCleanupSkipsWorktreeRemovalForPlainWorkspace(t *testing.T) {
+	fakes := &cleanupFakes{}
+	service := NewService(fakes.deps())
+	task := cleanupTestTask()
+	task.TokenID = ""
+	task.TokenName = ""
+	task.GitLabProjectID = ""
+	task.Branch = ""
+	task.WorktreeManaged = false
+	task.RepoPath = "/plain/workspace"
+	task.Worktree = "/plain/workspace"
+
+	err := service.Cleanup(context.Background(), Request{
+		TaskID:              "XL-123",
+		Task:                task,
+		RepoPath:            "/plain/workspace",
+		StateDir:            "/state",
+		ExpectedTmuxSession: "agentctl-XL-123",
+		ExpectedWorktree:    "/worktrees/XL-123",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	want := []cleanupCall{
+		{step: "container", containerName: "agent-XL-123"},
+		{step: "tmux", taskID: "XL-123"},
 		{step: "delete", taskID: "XL-123"},
 	}
 	if !reflect.DeepEqual(fakes.calls, want) {

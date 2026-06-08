@@ -16,3 +16,80 @@ remotes:
     config_path: /etc/agentctl/config.yaml
 templates:
   default: node
+sandbox:
+  macos:
+    mode: strict
+    network: true
+    allow_read:
+      - /bin
+      - /sbin
+      - /usr
+      - /System
+      - /Library
+      - /opt/homebrew
+      - /usr/local
+      - /private/var/select
+      - /var/select
+      - /var/db/xcode_select_link
+      - /private/var/db/xcode_select_link
+      - /etc/codex
+      - /private/etc/codex
+    allow_write:
+      - workspace
+      - task_home
+      - state_dir
+      - tmp
+    deny_read:
+      - ~/.ssh
+      - ~/.aws
+      - ~/.config
+      - ~/.gitconfig
+      - ~/Desktop
+      - ~/Documents
+    allow_tools:
+      - git
+      - ssh
+      - make
+      - cmake
+      - clang
+      - clang++
+      - gcc
+      - g++
+      - python
+      - python3
+      - pip
+      - pip3
+      - uv
+      - poetry
+      - node
+      - npm
+      - npx
+      - pnpm
+      - yarn
+      - bun
+      - deno
+      - go
+      - rustup
+      - cargo
+      - rustc
+      - java
+      - javac
+      - mvn
+      - gradle
+      - jq
+      - rg
+      - zsh
+      - codex
+      - claude
+      - agentctl
+    env:
+      GOPATH: ${TASK_HOME}/go
+      GOCACHE: ${TASK_HOME}/.cache/go-build
+      GOMODCACHE: ${TASK_HOME}/go/pkg/mod
+      npm_config_cache: ${TASK_HOME}/.npm
+      PNPM_HOME: ${TASK_HOME}/.pnpm
+      CARGO_HOME: ${TASK_HOME}/.cargo
+      RUSTUP_HOME: ${TASK_HOME}/.rustup
+    custom_rules:
+      allow_read: []
+      allow_write: []

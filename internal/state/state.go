@@ -16,6 +16,9 @@ var ErrInvalidTaskID = errors.New("invalid task id")
 type Task struct {
 	TaskID          string    `json:"task_id"`
 	Repo            string    `json:"repo"`
+	RepoPath        string    `json:"repo_path,omitempty"`
+	SessionKind     string    `json:"session_kind,omitempty"`
+	WorktreeManaged bool      `json:"worktree_managed,omitempty"`
 	Branch          string    `json:"branch"`
 	Worktree        string    `json:"worktree"`
 	TmuxSession     string    `json:"tmux_session"`

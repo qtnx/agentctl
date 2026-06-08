@@ -8,14 +8,14 @@ import (
 	"path/filepath"
 	"strings"
 
+	cleanuppkg "github.com/qtnx/agentctl/internal/cleanup"
+	"github.com/qtnx/agentctl/internal/config"
+	"github.com/qtnx/agentctl/internal/execx"
+	"github.com/qtnx/agentctl/internal/remote"
+	"github.com/qtnx/agentctl/internal/state"
+	"github.com/qtnx/agentctl/internal/tmux"
+	"github.com/qtnx/agentctl/internal/tokenbroker"
 	"github.com/spf13/cobra"
-	cleanuppkg "github.com/your-org/agentctl/internal/cleanup"
-	"github.com/your-org/agentctl/internal/config"
-	"github.com/your-org/agentctl/internal/execx"
-	"github.com/your-org/agentctl/internal/remote"
-	"github.com/your-org/agentctl/internal/state"
-	"github.com/your-org/agentctl/internal/tmux"
-	"github.com/your-org/agentctl/internal/tokenbroker"
 )
 
 type cleanupDeps struct {
@@ -161,7 +161,9 @@ func cleanupTask(ctx context.Context, deps cleanupDeps, taskID, configPath, remo
 
 	var repoPath string
 	var repoLookupErr error
-	if repo, ok := cfg.Repos[task.Repo]; ok {
+	if strings.TrimSpace(task.RepoPath) != "" {
+		repoPath = task.RepoPath
+	} else if repo, ok := cfg.Repos[task.Repo]; ok {
 		repoPath = repo.Path
 		if task.GitLabProjectID == "" {
 			task.GitLabProjectID = repo.ProjectID

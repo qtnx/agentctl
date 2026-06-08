@@ -8,10 +8,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/qtnx/agentctl/internal/config"
+	"github.com/qtnx/agentctl/internal/remote"
+	"github.com/qtnx/agentctl/internal/state"
 	"github.com/spf13/cobra"
-	"github.com/your-org/agentctl/internal/config"
-	"github.com/your-org/agentctl/internal/remote"
-	"github.com/your-org/agentctl/internal/state"
 )
 
 func TestAttachLoadsStateAndCallsTmuxAttach(t *testing.T) {
@@ -71,6 +71,35 @@ func TestShellBehavesLikeAttach(t *testing.T) {
 	}
 	if len(fakes.detachCalls) != 0 {
 		t.Fatalf("detach calls = %#v, want none", fakes.detachCalls)
+	}
+}
+
+func TestAttachDockerSessionUsesDockerAttach(t *testing.T) {
+	fakes := &sessionFakes{
+		cfg: &config.Config{StateDir: "/tmp/agentctl-state"},
+		tasks: map[string]state.Task{
+			"XL-123": {
+				TaskID:        "XL-123",
+				SessionKind:   "docker",
+				ContainerName: "agent-XL-123",
+			},
+		},
+	}
+
+	cmd := newAttachCommandWithDeps(fakes.deps())
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"XL-123"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	if !reflect.DeepEqual(fakes.containerAttachCalls, []string{"agent-XL-123"}) {
+		t.Fatalf("container attach calls = %#v, want docker attach", fakes.containerAttachCalls)
+	}
+	if len(fakes.attachCalls) != 0 {
+		t.Fatalf("tmux attach calls = %#v, want none", fakes.attachCalls)
 	}
 }
 
@@ -455,15 +484,16 @@ func TestRemoteAttachForwardsConfiguredRemoteConfigPath(t *testing.T) {
 }
 
 type sessionFakes struct {
-	cfg             *config.Config
-	loadConfigPaths []string
-	loadTaskCalls   []loadTaskCall
-	tasks           map[string]state.Task
-	loadErr         error
-	attachCalls     []string
-	detachCalls     []string
-	remoteCalls     []sessionRemoteCall
-	remoteErr       error
+	cfg                  *config.Config
+	loadConfigPaths      []string
+	loadTaskCalls        []loadTaskCall
+	tasks                map[string]state.Task
+	loadErr              error
+	attachCalls          []string
+	detachCalls          []string
+	containerAttachCalls []string
+	remoteCalls          []sessionRemoteCall
+	remoteErr            error
 }
 
 func (f *sessionFakes) deps() sessionDeps {
@@ -489,6 +519,10 @@ func (f *sessionFakes) deps() sessionDeps {
 		},
 		detach: func(_ context.Context, taskID string) error {
 			f.detachCalls = append(f.detachCalls, taskID)
+			return nil
+		},
+		attachContainer: func(_ context.Context, containerName string) error {
+			f.containerAttachCalls = append(f.containerAttachCalls, containerName)
 			return nil
 		},
 		forwardRemote: func(_ context.Context, target remote.Target, interactive bool, args ...string) error {

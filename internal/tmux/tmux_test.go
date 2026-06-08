@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -50,11 +51,20 @@ func TestStartRunsDetachedTmuxSessionInWorktree(t *testing.T) {
 	want := []recordedCommand{
 		{
 			name: "tmux",
-			args: []string{"new-session", "-d", "-s", "agentctl-XL-123", "-c", "/tmp/worktree", "bash", "-lc", "echo ok"},
+			args: []string{"new-session", "-d", "-s", "agentctl-XL-123", "-c", "/tmp/worktree", "bash", "-lc", exec.calls[0].args[8], "--", "bash", "-lc", "echo ok"},
 		},
 	}
 	if !reflect.DeepEqual(exec.calls, want) {
 		t.Fatalf("commands = %#v, want %#v", exec.calls, want)
+	}
+	if !strings.Contains(exec.calls[0].args[8], "command exited with status") {
+		t.Fatalf("wrapper = %q, want exit status message", exec.calls[0].args[8])
+	}
+	if !strings.Contains(exec.calls[0].args[8], `read -r _`) {
+		t.Fatalf("wrapper = %q, want wait for inspection", exec.calls[0].args[8])
+	}
+	if strings.Contains(exec.calls[0].args[8], `exec "${SHELL:-/bin/sh}"`) {
+		t.Fatalf("wrapper = %q, must not open host shell outside sandbox", exec.calls[0].args[8])
 	}
 }
 

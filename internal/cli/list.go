@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"text/tabwriter"
 
+	"github.com/qtnx/agentctl/internal/config"
+	"github.com/qtnx/agentctl/internal/state"
 	"github.com/spf13/cobra"
-	"github.com/your-org/agentctl/internal/config"
-	"github.com/your-org/agentctl/internal/state"
 )
 
 type listDeps struct {

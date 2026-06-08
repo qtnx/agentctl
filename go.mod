@@ -1,4 +1,4 @@
-module github.com/your-org/agentctl
+module github.com/qtnx/agentctl
 
 go 1.22
 

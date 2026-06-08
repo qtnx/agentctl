@@ -97,6 +97,91 @@ func TestDockerInvocationBuildsUntrustedRunCommandWithoutLeakingToken(t *testing
 	}
 }
 
+func TestDockerInvocationAddsExtraMounts(t *testing.T) {
+	opts := validDockerOptions()
+	opts.Mounts = []Mount{
+		{HostPath: "/Users/qqq/.codex", ContainerPath: "/root/.codex", Mode: "rw"},
+		{HostPath: "/Users/qqq/.claude", ContainerPath: "/root/.claude", Mode: "ro"},
+	}
+
+	invocation, err := DockerInvocationFor(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, want := range [][]string{
+		{"-v", "/Users/qqq/.codex:/root/.codex:rw"},
+		{"-v", "/Users/qqq/.claude:/root/.claude:ro"},
+	} {
+		if !containsSequence(invocation.Command, want) {
+			t.Fatalf("command = %#v, want mount %#v", invocation.Command, want)
+		}
+	}
+}
+
+func TestDockerInvocationSetsUpCorepackShimsForNodeImages(t *testing.T) {
+	invocation, err := DockerInvocationFor(DockerOptions{
+		TaskID:   "XL-123",
+		Worktree: "/tmp/worktree",
+		Image:    "node:22-bookworm",
+		Command:  []string{"pnpm", "--version"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	script := setupScript(t, invocation.Command, "node:22-bookworm")
+	for _, want := range []string{
+		"corepack enable",
+		"--install-directory",
+		"AGENTCTL_NODE_BIN",
+		"COREPACK_HOME",
+		"COREPACK_ENABLE_DOWNLOAD_PROMPT",
+		`export PATH="${AGENTCTL_NODE_BIN}:${PATH}"`,
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("script = %q, want %q", script, want)
+		}
+	}
+	if !containsArg(invocation.Env, "COREPACK_ENABLE_DOWNLOAD_PROMPT=0") {
+		t.Fatalf("env = %#v, want Corepack download prompt disabled", invocation.Env)
+	}
+}
+
+func TestDockerInvocationSkipsCorepackSetupForNonNodeImages(t *testing.T) {
+	invocation, err := DockerInvocationFor(DockerOptions{
+		TaskID:   "XL-123",
+		Worktree: "/tmp/worktree",
+		Image:    "golang:1.22-bookworm",
+		Command:  []string{"go", "version"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	script := setupScript(t, invocation.Command, "golang:1.22-bookworm")
+	if strings.Contains(script, "corepack") {
+		t.Fatalf("script = %q, want no corepack setup for non-node image", script)
+	}
+}
+
+func TestDockerInvocationPreservesNodeToolsInLoginShell(t *testing.T) {
+	invocation, err := DockerInvocationFor(DockerOptions{
+		TaskID:   "XL-123",
+		Worktree: "/tmp/worktree",
+		Image:    "node:22-bookworm",
+		Command:  []string{"sh", "-lc", "command -v pnpm"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	want := `export PATH="${AGENTCTL_NODE_BIN:-/tmp/agentctl-node-bin}:${PATH}"; command -v pnpm`
+	if !containsArg(invocation.Command, want) {
+		t.Fatalf("command = %#v, want shell command prefixed with Node tool PATH", invocation.Command)
+	}
+}
+
 func TestDockerInvocationRejectsMissingRequiredOptions(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -117,26 +202,62 @@ func TestDockerInvocationRejectsMissingRequiredOptions(t *testing.T) {
 			},
 			want: "Worktree",
 		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			opts := validDockerOptions()
+			tt.update(&opts)
+
+			_, err := DockerInvocationFor(opts)
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("error = %v, want field %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestDockerInvocationAllowsPlainWorkspaceWithoutGitLab(t *testing.T) {
+	opts := validDockerOptions()
+	opts.GitDir = ""
+	opts.GitLabToken = ""
+	opts.GitLabHost = ""
+
+	invocation, err := DockerInvocationFor(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if containsArg(invocation.Env, "GITLAB_TOKEN=glpat-secret") || containsArg(invocation.Env, "GITLAB_HOST=gitlab.example.com") {
+		t.Fatalf("env = %#v, want no GitLab env", invocation.Env)
+	}
+	if containsSequence(invocation.Command, []string{"-v", "/tmp/repo/.git:/tmp/repo/.git:rw"}) {
+		t.Fatalf("command = %#v, want no git dir mount", invocation.Command)
+	}
+}
+
+func TestDockerInvocationRejectsPartialGitLabCredentials(t *testing.T) {
+	tests := []struct {
+		name   string
+		update func(*DockerOptions)
+		want   string
+	}{
 		{
-			name: "gitlab token",
+			name: "token without host",
 			update: func(opts *DockerOptions) {
-				opts.GitLabToken = "\t"
-			},
-			want: "GitLabToken",
-		},
-		{
-			name: "git dir",
-			update: func(opts *DockerOptions) {
-				opts.GitDir = ""
-			},
-			want: "GitDir",
-		},
-		{
-			name: "gitlab host",
-			update: func(opts *DockerOptions) {
-				opts.GitLabHost = " "
+				opts.GitLabHost = ""
 			},
 			want: "GitLabHost",
+		},
+		{
+			name: "host without token",
+			update: func(opts *DockerOptions) {
+				opts.GitLabToken = ""
+			},
+			want: "GitLabToken",
 		},
 	}
 
@@ -153,6 +274,47 @@ func TestDockerInvocationRejectsMissingRequiredOptions(t *testing.T) {
 				t.Fatalf("error = %v, want field %q", err, tt.want)
 			}
 		})
+	}
+}
+
+func TestDockerInvocationDetachedKeepsTTYForAttach(t *testing.T) {
+	opts := validDockerOptions()
+	opts.Detached = true
+
+	invocation, err := DockerInvocationFor(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, want := range []string{"-d", "-i", "-t"} {
+		if !containsArg(invocation.Command, want) {
+			t.Fatalf("command = %#v, want %q", invocation.Command, want)
+		}
+	}
+}
+
+func TestDockerInvocationPublishesRequestedPortsOnLoopback(t *testing.T) {
+	invocation, err := DockerInvocationFor(DockerOptions{
+		TaskID:   "XL-123",
+		Worktree: "/tmp/worktree",
+		Command:  []string{"pnpm", "dev"},
+		Ports: []PortMapping{
+			{Local: "8080", Container: "3000"},
+			{Local: "5173", Container: "5173"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got := strings.Join(invocation.Command, "\x00")
+	for _, want := range []string{
+		"-p\x00127.0.0.1:8080:3000",
+		"-p\x00127.0.0.1:5173:5173",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("docker command = %#v, want port publish %q", invocation.Command, want)
+		}
 	}
 }
 
