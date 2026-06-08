@@ -81,6 +81,7 @@ sandbox:
       - zsh
       - codex
       - claude
+      - omx
       - agentctl
     env:
       GOPATH: ${TASK_HOME}/go

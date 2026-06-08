@@ -144,7 +144,7 @@ func TestLoadCreatesDefaultConfigWhenMissing(t *testing.T) {
 			t.Fatalf("sandbox allow_read = %#v, want %q", cfg.Sandbox.MacOS.AllowRead, want)
 		}
 	}
-	for _, want := range []string{"git", "make", "python3", "uv", "node", "npm", "pnpm", "go", "cargo", "rustc", "zsh", "codex", "claude", "agentctl"} {
+	for _, want := range []string{"git", "make", "python3", "uv", "node", "npm", "pnpm", "go", "cargo", "rustc", "zsh", "codex", "claude", "omx", "agentctl"} {
 		if !containsString(cfg.Sandbox.MacOS.AllowTools, want) {
 			t.Fatalf("sandbox allow_tools = %#v, want %q", cfg.Sandbox.MacOS.AllowTools, want)
 		}

@@ -1,13 +1,13 @@
-# agentctl - isolated AI coding agent workspaces for Codex and Claude Code
+# agentctl - isolated AI coding agent workspaces for Codex, Claude Code, and OMX
 
 [![Release](https://github.com/qtnx/agentctl/actions/workflows/release.yml/badge.svg)](https://github.com/qtnx/agentctl/actions/workflows/release.yml)
 [![GitHub release](https://img.shields.io/github/v/release/qtnx/agentctl)](https://github.com/qtnx/agentctl/releases)
 
-`agentctl` is a Go CLI for running AI coding agents in isolated, repeatable development workspaces. It combines git worktrees, Docker sandboxing, optional tmux sessions, GitLab project tokens, macOS sandbox fallback, and remote devbox execution so tools like Codex and Claude Code can work on untrusted code without polluting your main checkout.
+`agentctl` is a Go CLI for running AI coding agents in isolated, repeatable development workspaces. It combines git worktrees, Docker sandboxing, optional tmux sessions, GitLab project tokens, macOS sandbox fallback, and remote devbox execution so tools like Codex, Claude Code, and OMX can work on untrusted code without polluting your main checkout.
 
 Use `agentctl` when you want a practical AI agent runner for:
 
-- isolated Codex and Claude Code sessions
+- isolated Codex, Claude Code, and OMX sessions
 - Docker-based untrusted code execution
 - per-task git worktrees and cleanup
 - short-lived GitLab repository tokens
@@ -171,6 +171,7 @@ sandbox:
       - zsh
       - codex
       - claude
+      - omx
       - agentctl
     env:
       GOPATH: ${TASK_HOME}/go
@@ -204,7 +205,7 @@ Fields:
 - `sandbox.macos.allow_read`: system/toolchain paths readable by strict mode. Add SDKs or custom toolchains here.
 - `sandbox.macos.allow_write`: writable paths. Special values are `workspace`, `task_home`, `state_dir`, and `tmp`.
 - `sandbox.macos.deny_read`: explicit sensitive read denials. These are useful if you later allow a broader read path.
-- `sandbox.macos.allow_tools`: executable names or paths to resolve from host `PATH` and add to the read allowlist. This covers host-installed tools such as `git`, `node`, `codex`, `claude`, `go`, `cargo`, `zsh`, and the current `agentctl` binary. Add local SDKs or CLIs here instead of widening broad home-directory reads.
+- `sandbox.macos.allow_tools`: executable names or paths to resolve from host `PATH` and add to the read allowlist. This covers host-installed tools such as `git`, `node`, `codex`, `claude`, `omx`, `go`, `cargo`, `zsh`, and the current `agentctl` binary. Add local SDKs or CLIs here instead of widening broad home-directory reads.
 - `sandbox.macos.env`: environment variables for sandboxed tools. `${TASK_HOME}`, `${WORKSPACE}`, `${STATE_DIR}`, and `${TMPDIR}` are expanded by the runtime.
 - `sandbox.macos.custom_rules.allow_read` and `allow_write`: extra structured path allowlists for local overrides. Raw SBPL rules are intentionally not supported by default.
 
@@ -223,6 +224,7 @@ For quick starts, the root command can run an agent directly and generate the ta
 ```bash
 agentctl --agent codex
 agentctl --agent claude
+agentctl --agent omx
 agentctl --agent claude --repo backend --detach
 agentctl --agent claude --repo backend --no-tmux
 ```
@@ -264,13 +266,15 @@ If `tmux` is installed, Docker starts inside tmux session `agentctl-XL-123`. Pas
 
 Docker is preferred for `untrusted` code. On macOS only, if Docker is missing but `sandbox-exec` and `tmux` are available, `agentctl run` prompts before falling back to a native macOS sandbox. The prompt explains that `sandbox-exec` is weaker than Docker: it has no container filesystem, CPU, memory, or PID isolation. The default `strict` sandbox denies reads and writes outside the configured allowlists, so it may break local toolchains until their paths are added under `sandbox.macos.allow_read` or their executable names are listed under `sandbox.macos.allow_tools`. Declining the prompt exits before creating worktrees, tokens, or state. Only the `untrusted` risk profile is currently supported.
 
-Codex and Claude auth/config are linked into the isolated task home when they exist on the host:
+Codex, Claude, and OMX auth/config are linked into the isolated task home when they exist on the host:
 
 - `~/.codex` -> `${TASK_HOME}/.codex`
 - `~/.claude` -> `${TASK_HOME}/.claude`
 - `~/.claude.json` -> `${TASK_HOME}/.claude.json`
+- `~/.omx` -> `${TASK_HOME}/.omx`
+- `~/.config/omx` -> `${TASK_HOME}/.config/omx`
 
-For local Docker runs, the same paths are bind-mounted to `/root/.codex`, `/root/.claude`, and `/root/.claude.json`. This keeps existing CLI login state working, but it also means code running in that task can access those agent credentials.
+For local Docker runs, the same paths are bind-mounted under `/root`. This keeps existing CLI login state working, but it also means code running in that task can access those agent credentials.
 
 Run a dev command from the current directory with local-command ergonomics:
 

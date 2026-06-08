@@ -570,7 +570,7 @@ func agentAuthLinks(userHome func() (string, error)) []agentAuthLink {
 	}
 
 	links := []agentAuthLink{}
-	for _, name := range []string{".codex", ".claude", ".claude.json"} {
+	for _, name := range []string{".codex", ".claude", ".claude.json", ".omx", filepath.Join(".config", "omx")} {
 		hostPath := filepath.Join(home, name)
 		if _, err := os.Lstat(hostPath); err == nil {
 			links = append(links, agentAuthLink{name: name, hostPath: hostPath})
@@ -617,6 +617,9 @@ func ensureAgentAuthLinks(homeDir string, links []agentAuthLink) error {
 			continue
 		}
 		dest := filepath.Join(homeDir, link.name)
+		if err := os.MkdirAll(filepath.Dir(dest), 0700); err != nil {
+			return err
+		}
 		info, err := os.Lstat(dest)
 		if err == nil {
 			if info.Mode()&os.ModeSymlink == 0 {
@@ -686,6 +689,7 @@ func macOSSandboxTools(configured []string) []string {
 		"zsh",
 		"codex",
 		"claude",
+		"omx",
 		"agentctl",
 	}
 	tools = append(tools, configured...)
@@ -1250,9 +1254,9 @@ func runRuntimeFor(cfg *config.Config, opts runOptions) (runRuntimeSelection, er
 		agent = "codex"
 	}
 	switch agent {
-	case "codex", "claude", "shell":
+	case "codex", "claude", "omx", "shell":
 	default:
-		return runRuntimeSelection{}, fmt.Errorf("unsupported agent %q; supported agents: codex, claude, shell", agent)
+		return runRuntimeSelection{}, fmt.Errorf("unsupported agent %q; supported agents: codex, claude, omx, shell", agent)
 	}
 
 	return runRuntimeSelection{
@@ -1304,6 +1308,14 @@ func buildRunCommand(template runTemplateSpec, agent string) []string {
 			"  exec claude",
 			"fi",
 			`printf '%s\n' 'claude executable not found; falling back to shell' >&2`,
+		)
+		lines = appendInteractiveLoginShell(lines)
+	case "omx":
+		lines = append(lines,
+			"if command -v omx >/dev/null 2>&1; then",
+			"  exec omx",
+			"fi",
+			`printf '%s\n' 'omx executable not found; falling back to shell' >&2`,
 		)
 		lines = appendInteractiveLoginShell(lines)
 	}

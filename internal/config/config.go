@@ -188,6 +188,7 @@ func defaultConfig() Config {
 					"zsh",
 					"codex",
 					"claude",
+					"omx",
 					"agentctl",
 				},
 				Env: map[string]string{
@@ -285,6 +286,7 @@ func createDefaultConfig(path string) error {
 		"      - zsh",
 		"      - codex",
 		"      - claude",
+		"      - omx",
 		"      - agentctl",
 		"    env:",
 		"      GOPATH: ${TASK_HOME}/go",
